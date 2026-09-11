@@ -5,26 +5,27 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cmd::Value;
 use crate::execute::Status;
 
-/// `Send` because it may be run from a worker thread, and `'static` because a
-/// [`Closure`] has no lifetime to hang it on — captures are owned, or shared
-/// through an `Arc`. `FnOnce`, so values can be moved in and back out.
-pub(crate) type Call = Box<dyn FnOnce() -> anyhow::Result<()> + Send>;
+/// `Send` because the pipeline moves a [`Step`](crate::Step) into a scoped
+/// thread to run a batch, so everything a step holds has to be `Send`, even
+/// though a closure only ever runs on the thread that reached it. `FnOnce`, so
+/// values can be moved in and back out.
+pub(crate) type Call<'a> = Box<dyn FnOnce() -> anyhow::Result<()> + Send + 'a>;
 
 /// Rust to run in place of a command.
 ///
 /// Only its wall clock is measured. A thread has no `wait4` to ask, so there is
 /// no cpu time and no peak memory, and a closure takes neither a timeout nor a
 /// core count — a thread can be neither killed on a deadline nor pinned.
-pub struct Closure {
+pub struct Closure<'a> {
     pub(crate) name: String,
     pub(crate) fields: BTreeMap<String, String>,
     pub(crate) tags: BTreeSet<String>,
     pub(crate) status: Status,
     /// `None` once it has been run, which is the only time it can be.
-    pub(crate) f: Option<Call>,
+    pub(crate) f: Option<Call<'a>>,
 }
 
-impl std::fmt::Debug for Closure {
+impl std::fmt::Debug for Closure<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Closure")
             .field("name", &self.name)
@@ -33,13 +34,13 @@ impl std::fmt::Debug for Closure {
     }
 }
 
-impl Closure {
+impl<'a> Closure<'a> {
     /// The name is not optional the way a command's is: there is no program
     /// behind it to fall back on.
     pub fn new(
         name: impl Into<String>,
-        f: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
-    ) -> Closure {
+        f: impl FnOnce() -> anyhow::Result<()> + Send + 'a,
+    ) -> Closure<'a> {
         Closure {
             name: name.into(),
             fields: BTreeMap::new(),

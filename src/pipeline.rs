@@ -20,14 +20,14 @@ use crate::step::{Items, Step, Strategy};
 const STDERR_DIR: &str = "stderr";
 
 /// A pipeline under construction.
-pub struct PipelineBuilder {
-    steps: Vec<Step>,
+pub struct PipelineBuilder<'a> {
+    steps: Vec<Step<'a>>,
     sinks: Sinks,
     stderr_dir: Option<PathBuf>,
 }
 
-impl Default for PipelineBuilder {
-    fn default() -> PipelineBuilder {
+impl Default for PipelineBuilder<'_> {
+    fn default() -> Self {
         PipelineBuilder {
             steps: Vec::new(),
             sinks: Sinks::default(),
@@ -36,12 +36,12 @@ impl Default for PipelineBuilder {
     }
 }
 
-impl PipelineBuilder {
+impl<'a> PipelineBuilder<'a> {
     pub fn new() -> Self {
         PipelineBuilder::default()
     }
 
-    pub fn step(mut self, step: impl Into<Step>) -> Self {
+    pub fn step(mut self, step: impl Into<Step<'a>>) -> Self {
         self.steps.push(step.into());
         self
     }
@@ -61,7 +61,7 @@ impl PipelineBuilder {
         self
     }
 
-    pub fn build(self) -> anyhow::Result<Pipeline> {
+    pub fn build(self) -> anyhow::Result<Pipeline<'a>> {
         let PipelineBuilder {
             mut steps,
             sinks,
@@ -132,14 +132,14 @@ impl PipelineBuilder {
     }
 }
 
-pub struct Pipeline {
-    steps: Vec<Step>,
+pub struct Pipeline<'a> {
+    steps: Vec<Step<'a>>,
     sinks: Sinks,
     stderr_dir: Option<PathBuf>,
     cores: Cores,
 }
 
-impl Pipeline {
+impl Pipeline<'_> {
     pub fn dry_run(&self) {
         for step in &self.steps {
             println!("# {}", step.label());
@@ -214,7 +214,7 @@ impl Pipeline {
 
     /// Every step in turn, stopping at the first one that ends the run. Gives
     /// back the command that ended it, if one did.
-    fn run_steps(&mut self, steps: &mut [Step]) -> anyhow::Result<Option<String>> {
+    fn run_steps(&mut self, steps: &mut [Step<'_>]) -> anyhow::Result<Option<String>> {
         let mut failure = None;
         let mut remaining_steps = steps.iter_mut();
 
@@ -248,7 +248,7 @@ impl Pipeline {
     }
 
     /// One command at a time, stopping early if the step says to.
-    fn serial(&mut self, step: &mut Step) -> anyhow::Result<()> {
+    fn serial(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
         let start = Instant::now();
 
         for j in 0..step.cmds().len() {
@@ -271,7 +271,7 @@ impl Pipeline {
     ///
     /// Always serial: a closure runs on the thread that reached it, and nothing
     /// here spawns another.
-    fn closures(&mut self, step: &mut Step) -> anyhow::Result<()> {
+    fn closures(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
         let start = Instant::now();
 
         for j in 0..step.closures().len() {
@@ -298,7 +298,7 @@ impl Pipeline {
     /// killed. Those come back as `exit 143`, which is a real failure and reads
     /// as one, so a step that stopped shows the one command that broke it and the
     /// ones it took down with it.
-    fn batch(&mut self, step: &mut Step, jobs: usize) -> anyhow::Result<()> {
+    fn batch(&mut self, step: &mut Step<'_>, jobs: usize) -> anyhow::Result<()> {
         /// What a worker has to say about the command it claimed. Both go back
         /// over the one channel, so the main thread stays the only place that
         /// talks to a sink.
@@ -400,7 +400,7 @@ impl Pipeline {
     ///
     /// Two cases end up here: the tail of a step that stopped partway, and every
     /// command of a step the pipeline never got to.
-    fn skip_rest(&mut self, step: &mut Step) -> anyhow::Result<()> {
+    fn skip_rest(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
         for j in 0..step.cmds().len() {
             if matches!(step.cmds()[j].status(), Status::NotRun) {
                 step.cmds_mut()[j].status = Status::Skipped;
@@ -467,18 +467,23 @@ mod tests {
     }
 
     impl Sink for Recorder {
-        fn step_start(&mut self, step: &Step) -> anyhow::Result<()> {
+        fn step_start(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
             let mut log = self.log.lock().unwrap();
             log.order.push(format!("+{}", step.label()));
             Ok(())
         }
 
-        fn item_start(&mut self, _step: &Step, _at: usize, item: Item<'_>) -> anyhow::Result<()> {
+        fn item_start(
+            &mut self,
+            _step: &Step<'_>,
+            _at: usize,
+            item: Item<'_>,
+        ) -> anyhow::Result<()> {
             self.log.lock().unwrap().started.push(item.label());
             Ok(())
         }
 
-        fn item_done(&mut self, step: &Step, _at: usize, item: Item<'_>) -> anyhow::Result<()> {
+        fn item_done(&mut self, step: &Step<'_>, _at: usize, item: Item<'_>) -> anyhow::Result<()> {
             let mut log = self.log.lock().unwrap();
             log.records
                 .push((step.label(), item.label(), item.status().clone()));
@@ -490,7 +495,7 @@ mod tests {
             Ok(())
         }
 
-        fn step_done(&mut self, step: &Step) -> anyhow::Result<()> {
+        fn step_done(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
             let mut log = self.log.lock().unwrap();
             log.order.push(format!("-{}", step.label()));
             Ok(())
@@ -936,6 +941,27 @@ mod tests {
     }
 
     #[test]
+    fn a_closure_can_borrow_a_local_instead_of_moving_it() {
+        let greeting = String::from("borrowed");
+        let items: Vec<u8> = vec![1, 2, 3];
+        let (tx, rx) = mpsc::channel();
+
+        // no move, no clone, no Arc: that this compiles is the assertion
+        PipelineBuilder::new()
+            .step(Closure::new("borrows", || {
+                tx.send(format!("{greeting}: {}", items.len())).ok();
+                Ok(())
+            }))
+            .no_stderr()
+            .build()
+            .unwrap()
+            .run()
+            .unwrap();
+
+        assert_eq!(rx.recv().unwrap(), "borrowed: 3");
+    }
+
+    #[test]
     fn a_closure_that_never_ran_is_announced_once_as_skipped() {
         let recorder = Recorder::default();
         let log = Arc::clone(&recorder.log);
@@ -969,27 +995,27 @@ mod tests {
 struct Sinks(Vec<Box<dyn Sink>>);
 
 impl Sinks {
-    fn start(&mut self, steps: &[Step]) -> anyhow::Result<()> {
+    fn start(&mut self, steps: &[Step<'_>]) -> anyhow::Result<()> {
         self.0.iter_mut().try_for_each(|s| s.start(steps))
     }
 
-    fn step_start(&mut self, step: &Step) -> anyhow::Result<()> {
+    fn step_start(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
         self.0.iter_mut().try_for_each(|s| s.step_start(step))
     }
 
-    fn item_start(&mut self, step: &Step, at: usize, item: Item<'_>) -> anyhow::Result<()> {
+    fn item_start(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> anyhow::Result<()> {
         self.0
             .iter_mut()
             .try_for_each(|s| s.item_start(step, at, item))
     }
 
-    fn item_done(&mut self, step: &Step, at: usize, item: Item<'_>) -> anyhow::Result<()> {
+    fn item_done(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> anyhow::Result<()> {
         self.0
             .iter_mut()
             .try_for_each(|s| s.item_done(step, at, item))
     }
 
-    fn step_done(&mut self, step: &Step) -> anyhow::Result<()> {
+    fn step_done(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
         self.0.iter_mut().try_for_each(|s| s.step_done(step))
     }
 

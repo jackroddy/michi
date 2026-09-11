@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
         // cpu, memory and argv columns come out empty
         .step(
             Step::from_closures([
-                Closure::new("count-lines", move || {
+                Closure::new("count-lines", || {
                     let lines = std::fs::read_to_string(&data)?.lines().count();
                     anyhow::ensure!(lines == 2000, "expected 2000 lines, found {lines}");
                     Ok(())

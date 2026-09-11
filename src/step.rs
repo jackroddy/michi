@@ -26,7 +26,7 @@ pub enum Strategy {
 /// enough to be kept apart: only commands have a strategy to run under, cores
 /// to ask for, or an argv to print.
 #[derive(Debug)]
-pub(crate) enum Items {
+pub(crate) enum Items<'a> {
     Cmds {
         cmds: Vec<Cmd>,
         strategy: Strategy,
@@ -34,19 +34,19 @@ pub(crate) enum Items {
         cores: Option<usize>,
     },
     /// Serial by definition, for now: nothing here spawns a thread.
-    Closures(Vec<Closure>),
+    Closures(Vec<Closure<'a>>),
 }
 
 #[derive(Debug)]
-pub struct Step {
+pub struct Step<'a> {
     pub(crate) name: Option<String>,
     pub(crate) index: Option<usize>,
     pub(crate) on_error: OnError,
     pub(crate) elapsed_s: Option<f64>,
-    pub(crate) items: Items,
+    pub(crate) items: Items<'a>,
 }
 
-impl Step {
+impl<'a> Step<'a> {
     pub fn serial(cmds: impl IntoIterator<Item = Cmd>) -> Self {
         Step::of(Items::Cmds {
             cmds: cmds.into_iter().collect(),
@@ -65,11 +65,11 @@ impl Step {
 
     /// One closure after another. There is no batched form: a closure runs on
     /// the thread that reached it.
-    pub fn from_closures(closures: impl IntoIterator<Item = Closure>) -> Self {
+    pub fn from_closures(closures: impl IntoIterator<Item = Closure<'a>>) -> Self {
         Step::of(Items::Closures(closures.into_iter().collect()))
     }
 
-    fn of(items: Items) -> Self {
+    fn of(items: Items<'a>) -> Self {
         Step {
             name: None,
             index: None,
@@ -118,7 +118,7 @@ impl Step {
         }
     }
 
-    pub fn closures(&self) -> &[Closure] {
+    pub fn closures(&self) -> &[Closure<'a>] {
         match &self.items {
             Items::Cmds { .. } => &[],
             Items::Closures(closures) => closures,
@@ -162,7 +162,7 @@ impl Step {
         }
     }
 
-    pub(crate) fn closures_mut(&mut self) -> &mut [Closure] {
+    pub(crate) fn closures_mut(&mut self) -> &mut [Closure<'a>] {
         match &mut self.items {
             Items::Cmds { .. } => &mut [],
             Items::Closures(closures) => closures,
@@ -206,14 +206,14 @@ impl Step {
     }
 }
 
-impl From<Cmd> for Step {
-    fn from(cmd: Cmd) -> Step {
+impl From<Cmd> for Step<'_> {
+    fn from(cmd: Cmd) -> Self {
         Step::serial([cmd])
     }
 }
 
-impl From<Closure> for Step {
-    fn from(closure: Closure) -> Step {
+impl<'a> From<Closure<'a>> for Step<'a> {
+    fn from(closure: Closure<'a>) -> Step<'a> {
         Step::from_closures([closure])
     }
 }
@@ -234,7 +234,7 @@ mod tests {
     }
 
     /// Two commands, the second having gone however `outcome` says.
-    fn step(on_error: OnError, outcome: Status) -> Step {
+    fn step<'a>(on_error: OnError, outcome: Status) -> Step<'a> {
         let mut step = Step::serial([Cmd::new("/a"), Cmd::new("/b")]).on_error(on_error);
         step.cmds_mut()[0].status = Status::Finished(timing(0));
         step.cmds_mut()[1].status = outcome;

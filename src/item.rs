@@ -17,7 +17,7 @@ use crate::execute::Status;
 #[derive(Clone, Copy, Debug)]
 pub enum Item<'a> {
     Cmd(&'a Cmd),
-    Closure(&'a Closure),
+    Closure(&'a Closure<'a>),
 }
 
 impl<'a> Item<'a> {

@@ -244,7 +244,7 @@ impl Progress {
 }
 
 impl Sink for Progress {
-    fn start(&mut self, steps: &[Step]) -> anyhow::Result<()> {
+    fn start(&mut self, steps: &[Step<'_>]) -> anyhow::Result<()> {
         let mut state = self.shared.state.lock().unwrap();
 
         // asked of the stream this actually writes to, so a redirect is seen
@@ -293,7 +293,7 @@ impl Sink for Progress {
         Ok(())
     }
 
-    fn step_start(&mut self, _step: &Step) -> anyhow::Result<()> {
+    fn step_start(&mut self, _step: &Step<'_>) -> anyhow::Result<()> {
         let mut state = self.shared.state.lock().unwrap();
         state.at = state.started;
         state.started += 1;
@@ -305,7 +305,7 @@ impl Sink for Progress {
         Ok(())
     }
 
-    fn item_start(&mut self, _step: &Step, at: usize, item: Item<'_>) -> anyhow::Result<()> {
+    fn item_start(&mut self, _step: &Step<'_>, at: usize, item: Item<'_>) -> anyhow::Result<()> {
         let mut state = self.shared.state.lock().unwrap();
         state.running.push(Running {
             at,
@@ -316,7 +316,7 @@ impl Sink for Progress {
         Ok(())
     }
 
-    fn item_done(&mut self, step: &Step, at: usize, item: Item<'_>) -> anyhow::Result<()> {
+    fn item_done(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> anyhow::Result<()> {
         let mut state = self.shared.state.lock().unwrap();
 
         // by position rather than by name: names repeat, positions do not
@@ -355,7 +355,7 @@ impl Sink for Progress {
         Ok(())
     }
 
-    fn step_done(&mut self, _step: &Step) -> anyhow::Result<()> {
+    fn step_done(&mut self, _step: &Step<'_>) -> anyhow::Result<()> {
         let mut state = self.shared.state.lock().unwrap();
         // `at` stays put: until the next step starts, the step that just ended
         // is still the one worth showing, sitting at its full count

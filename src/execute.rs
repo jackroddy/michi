@@ -82,7 +82,7 @@ impl Cores {
     }
 }
 
-impl Closure {
+impl Closure<'_> {
     /// Run it and time it.
     ///
     /// The wall clock is all there is. A panic is caught here, so one bad

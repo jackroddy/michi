@@ -115,7 +115,7 @@ impl Table {
 }
 
 impl Sink for Table {
-    fn start(&mut self, steps: &[Step]) -> anyhow::Result<()> {
+    fn start(&mut self, steps: &[Step<'_>]) -> anyhow::Result<()> {
         self.columns = Columns::of(steps);
 
         // Ragged blocks are meant to differ, and Whole renders in one go, so
@@ -141,7 +141,7 @@ impl Sink for Table {
     // which keeps them in the order the commands were declared rather than the
     // order a batch happened to finish them in
 
-    fn step_done(&mut self, step: &Step) -> anyhow::Result<()> {
+    fn step_done(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
         let columns = match self.mode {
             Mode::Ragged => Columns::of(std::slice::from_ref(step)),
             _ => self.columns.clone(),
@@ -199,7 +199,7 @@ struct Columns {
 impl Columns {
     /// The keys and tags these steps carry, each in sorted order. Commands and
     /// closures share the columns, since they share the table.
-    fn of(steps: &[Step]) -> Columns {
+    fn of(steps: &[Step<'_>]) -> Columns {
         let mut keys = BTreeSet::new();
         let mut tags = BTreeSet::new();
         let mut cpus = false;
@@ -247,7 +247,7 @@ impl Columns {
     }
 
     /// One step's rows: its own line, then a line per command.
-    fn block(&self, step: &Step) -> Vec<Vec<Cell>> {
+    fn block(&self, step: &Step<'_>) -> Vec<Vec<Cell>> {
         let mut rows = Vec::new();
 
         // a step of one would just repeat itself, so it gets no line of its own
@@ -272,7 +272,7 @@ impl Columns {
     ///
     /// Everything but the numbers is already known before the run, and the
     /// headings above the numbers are wider than the numbers usually are.
-    fn measure(&self, steps: &[Step]) -> Vec<usize> {
+    fn measure(&self, steps: &[Step<'_>]) -> Vec<usize> {
         let header = self.header();
         let mut widths = vec![0; header.len()];
 
@@ -339,7 +339,7 @@ impl Metrics {
 
 impl Columns {
     /// The step's own line: measured wall clock, and its commands' CPU added up.
-    fn step_row(&self, step: &Step) -> Vec<Cell> {
+    fn step_row(&self, step: &Step<'_>) -> Vec<Cell> {
         let mut cells = vec![Cell::left(step.label()), Cell::left("-")];
         cells.extend(std::iter::repeat_n(
             Cell::left("-"),
@@ -563,7 +563,7 @@ mod tests {
             .stderr(Output::Inherit)
     }
 
-    fn finish(step: &mut Step, index: usize) {
+    fn finish(step: &mut Step<'_>, index: usize) {
         step.index = Some(index);
         step.elapsed_s = Some(1.5);
         for cmd in step.cmds_mut() {
@@ -581,7 +581,7 @@ mod tests {
     }
 
     /// A step of one that collapses, then a batch of two carrying a field.
-    fn steps() -> Vec<Step> {
+    fn steps<'a>() -> Vec<Step<'a>> {
         let mut setup = Step::serial([cmd("/mkdir", "mkdir")]).name("setup");
         finish(&mut setup, 1);
 
@@ -607,7 +607,7 @@ mod tests {
     }
 
     /// Drive the sink the way a pipeline would, and give back what it wrote.
-    fn write(name: &str, mode: Mode, steps: &[Step]) -> String {
+    fn write(name: &str, mode: Mode, steps: &[Step<'_>]) -> String {
         let path = scratch(name);
 
         let mut table = Table::new(&path).mode(mode);
