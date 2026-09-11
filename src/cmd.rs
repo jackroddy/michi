@@ -78,12 +78,33 @@ pub(crate) struct Opt {
     value: Option<String>,
 }
 
+/// One level of a command: the program itself, or a subcommand under it.
+#[derive(Clone, Debug)]
+pub(crate) struct Level {
+    /// The subcommand word, or `None` for the program's own level.
+    sub: Option<String>,
+    opts: Vec<Opt>,
+    positionals: Vec<String>,
+}
+
+impl Level {
+    fn new(sub: Option<String>) -> Level {
+        Level {
+            sub,
+            opts: Vec::new(),
+            positionals: Vec::new(),
+        }
+    }
+}
+
 /// A command, built but not run.
 ///
-/// The pieces are kept apart rather than in one argv so that the order they are
-/// added in doesn't matter. Several of these tools take their query and target
-/// as trailing positionals, and an option tacked on after them would be read as
-/// another file.
+/// `Cmd` keeps the pieces apart rather than in one argv so that an option added
+/// after a positional still comes out in front of it. Several of these tools
+/// take their query and target as trailing positionals, and an option tacked on
+/// after them would be read as another file. `sub` is the one call whose
+/// position matters: it starts a new level, and the options and paths after it
+/// go on that one.
 #[derive(Clone, Debug)]
 pub struct Cmd {
     pub(crate) name: Option<String>,
@@ -94,9 +115,10 @@ pub struct Cmd {
     /// The cpus it was given, filled in when it runs and only for as long as it
     /// held them.
     pub(crate) cpus: Vec<usize>,
-    pub(crate) sub: Vec<String>,
-    pub(crate) opts: Vec<Opt>,
-    pub(crate) positionals: Vec<String>,
+    /// The program's own level, then one per subcommand.
+    //
+    // never empty: new pushes the program's level
+    pub(crate) levels: Vec<Level>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) dir: Option<PathBuf>,
     pub(crate) timeout: Option<Duration>,
@@ -114,9 +136,7 @@ impl Cmd {
             program: program.as_ref().to_owned(),
             cores: None,
             cpus: Vec::new(),
-            sub: Vec::new(),
-            opts: Vec::new(),
-            positionals: Vec::new(),
+            levels: vec![Level::new(None)],
             env: BTreeMap::new(),
             dir: None,
             timeout: None,
@@ -141,15 +161,16 @@ impl Cmd {
     }
 
     /// A subcommand, like the `search` in `mmseqs search`. Call it more than
-    /// once for tools that nest them.
+    /// once for tools that nest them. Options and paths added after it go with
+    /// that subcommand rather than with the program.
     pub fn sub(mut self, sub: impl Into<String>) -> Self {
-        self.sub.push(sub.into());
+        self.levels.push(Level::new(Some(sub.into())));
         self
     }
 
     /// An option that stands alone, like `--allow-overwrite`.
     pub fn flag(mut self, flag: impl Into<String>) -> Self {
-        self.opts.push(Opt {
+        self.current().opts.push(Opt {
             flag: flag.into(),
             value: None,
         });
@@ -158,7 +179,7 @@ impl Cmd {
 
     /// An option and the value that follows it, like `-E 10`.
     pub fn arg(mut self, flag: impl Into<String>, value: impl Value) -> Self {
-        self.opts.push(Opt {
+        self.current().opts.push(Opt {
             flag: flag.into(),
             value: Some(value.render()),
         });
@@ -166,10 +187,20 @@ impl Cmd {
     }
 
     /// A positional. These come out in the order they were added, after
-    /// everything else.
+    /// everything else on their level.
     pub fn path(mut self, path: impl AsRef<Path>) -> Self {
-        self.positionals.push(path.as_ref().display().to_string());
+        self.current()
+            .positionals
+            .push(path.as_ref().display().to_string());
         self
+    }
+
+    /// The level the next option or path goes on: the last `sub`, or the
+    /// program's own if there has not been one.
+    fn current(&mut self) -> &mut Level {
+        self.levels
+            .last_mut()
+            .expect("a Cmd always has its program's level")
     }
 
     pub fn env(mut self, key: impl Into<String>, value: impl Value) -> Self {
@@ -250,18 +281,28 @@ impl Cmd {
 
     /// Everything after the program, in the order it gets handed to the shell.
     pub(crate) fn args(&self) -> Vec<String> {
-        let mut out = Vec::with_capacity(self.sub.len() + self.opts.len() + self.positionals.len());
+        let size = self
+            .levels
+            .iter()
+            .map(|level| {
+                usize::from(level.sub.is_some()) + level.opts.len() + level.positionals.len()
+            })
+            .sum();
+        let mut out = Vec::with_capacity(size);
 
-        out.extend(self.sub.iter().cloned());
+        for level in &self.levels {
+            out.extend(level.sub.iter().cloned());
 
-        for opt in &self.opts {
-            out.push(opt.flag.clone());
-            if let Some(value) = &opt.value {
-                out.push(value.clone());
+            for opt in &level.opts {
+                out.push(opt.flag.clone());
+                if let Some(value) = &opt.value {
+                    out.push(value.clone());
+                }
             }
+
+            out.extend(level.positionals.iter().cloned());
         }
 
-        out.extend(self.positionals.iter().cloned());
         out
     }
 
@@ -377,11 +418,11 @@ mod tests {
         // the whole reason a Cmd keeps its pieces apart: several of these tools
         // read a trailing option as another input file
         let cmd = Cmd::new("/bin/mmseqs")
+            .sub("search")
             .path("query.fa")
             .arg("-s", "7.5")
             .path("target.fa")
-            .flag("--quiet")
-            .sub("search");
+            .flag("--quiet");
 
         assert_eq!(
             cmd.args(),
@@ -399,6 +440,34 @@ mod tests {
     fn subcommands_nest_in_front() {
         let cmd = Cmd::new("/x").sub("outer").sub("inner").flag("-q");
         assert_eq!(cmd.args(), ["outer", "inner", "-q"]);
+    }
+
+    #[test]
+    fn options_before_the_first_sub_stay_in_front_of_it() {
+        let cmd = Cmd::new("/git")
+            .arg("-C", "dir")
+            .sub("commit")
+            .arg("-m", "msg");
+        assert_eq!(cmd.args(), ["-C", "dir", "commit", "-m", "msg"]);
+    }
+
+    #[test]
+    fn every_level_keeps_its_own_options_and_positionals() {
+        let cmd = Cmd::new("/docker")
+            .sub("run")
+            .flag("-it")
+            .path("img")
+            .sub("cmd")
+            .flag("--opt")
+            .path("in");
+
+        assert_eq!(cmd.args(), ["run", "-it", "img", "cmd", "--opt", "in"]);
+    }
+
+    #[test]
+    fn a_positional_on_the_program_level_comes_before_the_first_sub() {
+        let cmd = Cmd::new("/x").path("a").sub("s").path("b");
+        assert_eq!(cmd.args(), ["a", "s", "b"]);
     }
 
     #[test]
