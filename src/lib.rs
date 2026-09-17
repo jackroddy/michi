@@ -19,7 +19,7 @@ mod step;
 mod table;
 
 pub use closure::Closure;
-pub use cmd::{Cmd, Output, Value};
+pub use cmd::{Cmd, Memory, Output, Value};
 pub use execute::{Status, Timing};
 pub use item::Item;
 pub use pipeline::{Pipeline, PipelineBuilder};

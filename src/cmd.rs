@@ -97,6 +97,26 @@ impl Level {
     }
 }
 
+/// Where a command's pages come from, once its cores sit on a memory node.
+///
+/// Only [`Bound`](Memory::Bound) can fail a command that would otherwise have
+/// run: a node that fills has no fallback under it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Memory {
+    /// Prefer the node the cores are on, and spill onto another when it fills.
+    /// `MPOL_PREFERRED`.
+    #[default]
+    Preferred,
+
+    /// That node and no other. `MPOL_BIND`, so a command needing more than the
+    /// node has left is killed rather than slowed.
+    Bound,
+
+    /// Ask for nothing, and let each page land on the node of the thread that
+    /// touched it first, which is what the kernel does unasked.
+    FirstTouch,
+}
+
 /// A command, built but not run.
 ///
 /// `Cmd` keeps the pieces apart rather than in one argv so that an option added
@@ -119,6 +139,10 @@ pub struct Cmd {
     /// The memory nodes those cpus sit on, and nothing on a machine with one
     /// node.
     pub(crate) nodes: Vec<usize>,
+
+    /// Where its pages should come from, or `None` until [`Step`](crate::Step)
+    /// or [`Pipeline`](crate::Pipeline) settles it.
+    pub(crate) memory: Option<Memory>,
 
     /// Whether the machine has more than one memory node.
     //
@@ -149,6 +173,7 @@ impl Cmd {
             cores: None,
             cpus: Vec::new(),
             nodes: Vec::new(),
+            memory: None,
             numa: false,
             levels: vec![Level::new(None)],
             env: BTreeMap::new(),
@@ -179,6 +204,14 @@ impl Cmd {
     /// that subcommand rather than with the program.
     pub fn sub(mut self, sub: impl Into<String>) -> Self {
         self.levels.push(Level::new(Some(sub.into())));
+        self
+    }
+
+    /// Where its pages should come from. The default is
+    /// [`Memory::Preferred`], and a command asking for no cores is never
+    /// placed, so this does nothing to it.
+    pub fn memory(mut self, memory: Memory) -> Self {
+        self.memory = Some(memory);
         self
     }
 

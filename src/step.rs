@@ -1,5 +1,5 @@
 use crate::closure::Closure;
-use crate::cmd::Cmd;
+use crate::cmd::{Cmd, Memory};
 use crate::execute::Status;
 use crate::item::Item;
 use crate::label;
@@ -32,6 +32,9 @@ pub(crate) enum Items<'a> {
         strategy: Strategy,
         /// How many cores each of these asks for, unless it asked for itself.
         cores: Option<usize>,
+
+        /// Where each of these takes its pages from, unless it said for itself.
+        memory: Option<Memory>,
     },
     /// Serial by definition, for now: nothing here spawns a thread.
     Closures(Vec<Closure<'a>>),
@@ -52,6 +55,7 @@ impl<'a> Step<'a> {
             cmds: cmds.into_iter().collect(),
             strategy: Strategy::Serial,
             cores: None,
+            memory: None,
         })
     }
 
@@ -60,6 +64,7 @@ impl<'a> Step<'a> {
             cmds: cmds.into_iter().collect(),
             strategy: Strategy::Batched { jobs: jobs.max(1) },
             cores: None,
+            memory: None,
         })
     }
 
@@ -88,6 +93,17 @@ impl<'a> Step<'a> {
         // a closure asks for none, so there is nothing here to set
         if let Items::Cmds { cores: c, .. } = &mut self.items {
             *c = Some(cores);
+        }
+        self
+    }
+
+    /// Where these commands take their pages from, for any that did not say for
+    /// itself.
+    pub fn memory(mut self, memory: Memory) -> Self {
+        // a closure holds no cores, so it is never placed anywhere
+        // to take its pages from
+        if let Items::Cmds { memory: m, .. } = &mut self.items {
+            *m = Some(memory);
         }
         self
     }

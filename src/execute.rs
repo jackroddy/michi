@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 
 use crate::closure::Closure;
-use crate::cmd::{Cmd, Output};
+use crate::cmd::{Cmd, Memory, Output};
 use crate::cpu::{Cores, Lease};
 
 /// How long anything gets to leave on a SIGTERM before it gets a SIGKILL.
@@ -23,11 +23,12 @@ const SIGTERM_GRACE: Duration = Duration::from_secs(5);
 
 /// `MPOL_PREFERRED` from `linux/mempolicy.h`, which libc carries no constant
 /// for.
-//
-// preferred rather than bind: a command that outgrows its
-// node should come out slower, not dead
 #[cfg(target_os = "linux")]
 const MPOL_PREFERRED: libc::c_int = 1;
+
+/// `MPOL_BIND`, from the same header.
+#[cfg(target_os = "linux")]
+const MPOL_BIND: libc::c_int = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timing {
@@ -261,6 +262,28 @@ fn nodes(lease: &Option<Lease>) -> Vec<usize> {
     }
 }
 
+/// The memory policy to install in the child, the way `set_mempolicy` takes it:
+/// a mode, a node mask, and how many bits of the mask to read.
+///
+/// `None` wherever there is nothing to say. A machine with one node hands out
+/// no nodes at all, first touch is the kernel's own behaviour and needs no
+/// call, and `MPOL_PREFERRED` names a single node, so a command preferring one
+/// after it had to take cores off two has no way to say which.
+#[cfg(target_os = "linux")]
+fn policy(memory: Memory, nodes: &[usize]) -> Option<(libc::c_int, Vec<libc::c_ulong>, usize)> {
+    let (mode, nodes) = match (memory, nodes) {
+        (_, []) | (Memory::FirstTouch, _) => return None,
+        (Memory::Preferred, [node]) => (MPOL_PREFERRED, &[*node][..]),
+        (Memory::Preferred, _) => return None,
+        // bind takes a mask rather than one node, so a command
+        // that had to span two is still held to exactly those
+        (Memory::Bound, nodes) => (MPOL_BIND, nodes),
+    };
+
+    let (mask, bits) = crate::cpu::nodemask(nodes);
+    Some((mode, mask, bits))
+}
+
 fn outcome(waited: anyhow::Result<(Timing, bool)>) -> Status {
     match waited {
         Ok((timing, true)) => Status::TimedOut(timing),
@@ -322,14 +345,7 @@ impl Cmd {
         if !self.cpus.is_empty() {
             let set = crate::cpu::mask(&self.cpus);
 
-            // MPOL_PREFERRED names one node, so a command that
-            // had to take cores off two says nothing and leaves
-            // the kernel to give each thread pages from the node
-            // that thread touched them on
-            let policy = match self.nodes.as_slice() {
-                [node] => Some(crate::cpu::nodemask(&[*node])),
-                _ => None,
-            };
+            let policy = policy(self.memory.unwrap_or_default(), &self.nodes);
 
             unsafe {
                 proc.pre_exec(move || {
@@ -337,15 +353,11 @@ impl Cmd {
                         return Err(std::io::Error::last_os_error());
                     }
 
-                    if let Some((mask, bits)) = &policy {
+                    if let Some((mode, mask, bits)) = &policy {
                         // glibc wraps neither of the mempolicy
                         // calls, so this is the raw syscall
-                        let rc = libc::syscall(
-                            libc::SYS_set_mempolicy,
-                            MPOL_PREFERRED,
-                            mask.as_ptr(),
-                            *bits,
-                        );
+                        let rc =
+                            libc::syscall(libc::SYS_set_mempolicy, *mode, mask.as_ptr(), *bits);
                         if rc != 0 {
                             return Err(std::io::Error::last_os_error());
                         }
@@ -559,6 +571,47 @@ fn secs(tv: libc::timeval) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_machine_with_one_node_asks_for_no_policy() {
+        // an empty node list is what a single node pool hands out
+        for memory in [Memory::Preferred, Memory::Bound, Memory::FirstTouch] {
+            assert!(policy(memory, &[]).is_none(), "{memory:?} on one node");
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn first_touch_asks_for_no_policy_wherever_it_landed() {
+        assert!(policy(Memory::FirstTouch, &[1]).is_none());
+        assert!(policy(Memory::FirstTouch, &[0, 1]).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn preferred_names_the_one_node_it_can_name() {
+        assert_eq!(
+            policy(Memory::Preferred, &[1]),
+            Some((MPOL_PREFERRED, vec![0b10], 2))
+        );
+        // MPOL_PREFERRED has no way to say "either of these two",
+        // so a command that had to span says nothing at all
+        assert!(policy(Memory::Preferred, &[0, 1]).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn bound_holds_a_command_to_every_node_it_took_cores_from() {
+        assert_eq!(
+            policy(Memory::Bound, &[1]),
+            Some((MPOL_BIND, vec![0b10], 2))
+        );
+        assert_eq!(
+            policy(Memory::Bound, &[0, 1]),
+            Some((MPOL_BIND, vec![0b11], 2))
+        );
+    }
     use std::sync::atomic::AtomicUsize;
 
     fn sh(script: &str) -> Cmd {

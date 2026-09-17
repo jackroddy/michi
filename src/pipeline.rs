@@ -83,12 +83,14 @@ impl<'a> PipelineBuilder<'a> {
             let Items::Cmds {
                 cmds,
                 cores: inherited,
+                memory: inherited_memory,
                 ..
             } = &mut step.items
             else {
                 continue;
             };
             let inherited = *inherited;
+            let inherited_memory = *inherited_memory;
 
             for (c, cmd) in cmds.iter_mut().enumerate() {
                 let c_idx = c + 1;
@@ -108,6 +110,9 @@ impl<'a> PipelineBuilder<'a> {
                 // command's core count can come from the step holding it
                 if cmd.cores.is_none() {
                     cmd.cores = inherited;
+                }
+                if cmd.memory.is_none() {
+                    cmd.memory = inherited_memory;
                 }
                 cmd.numa = cores.spans_nodes();
 
@@ -429,6 +434,7 @@ impl Pipeline<'_> {
 mod tests {
     use super::*;
     use crate::closure::Closure;
+    use crate::cmd::Memory;
     use crate::cpu::Cores;
     use crate::step::OnError;
     use std::sync::{Arc, Mutex};
@@ -535,6 +541,24 @@ mod tests {
         assert_eq!(pipeline.steps[0].cmds()[0].cores, Some(4));
         assert_eq!(pipeline.steps[0].cmds()[1].cores, Some(2));
         assert_eq!(pipeline.steps[1].cmds()[0].cores, None);
+    }
+
+    #[test]
+    fn a_command_takes_its_memory_policy_from_the_step_unless_it_has_its_own() {
+        let pipeline = PipelineBuilder::new()
+            .step(
+                Step::serial([Cmd::new("/a"), Cmd::new("/b").memory(Memory::Bound)])
+                    .memory(Memory::FirstTouch),
+            )
+            .step(Step::serial([Cmd::new("/c")]))
+            .no_stderr()
+            .build()
+            .unwrap();
+
+        assert_eq!(pipeline.steps[0].cmds()[0].memory, Some(Memory::FirstTouch));
+        assert_eq!(pipeline.steps[0].cmds()[1].memory, Some(Memory::Bound));
+        // nothing said anywhere, which execute reads as the default
+        assert_eq!(pipeline.steps[1].cmds()[0].memory, None);
     }
 
     #[test]

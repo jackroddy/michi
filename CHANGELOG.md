@@ -16,11 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has free crosses as few of them as its size forces. Placement only ever
   chooses among the cpus free at that moment, so nothing waits longer than it
   did before.
-- A command placed on one node asks the kernel for its pages there, through
-  `MPOL_PREFERRED` and not `MPOL_BIND`: one that outgrows its node spills onto
-  another and runs slowly instead of being killed. A command that had to take
-  cores off two nodes states no preference, which leaves each thread's pages on
-  the node that touched them.
+- A command placed on one node asks the kernel for its pages there. It spills
+  onto another node when that one fills, so a command needing more memory than
+  its node has runs slowly rather than dying.
+- `Cmd::memory` and `Step::memory` choose that policy, taking a `Memory`.
+  `Preferred` is the default and the behaviour above. `FirstTouch` asks the
+  kernel for nothing, for pinning cores without touching memory placement.
+  `Bound` holds a command to the nodes it took cores from, and the kernel kills
+  it when they fill. A step's setting covers the commands under it, the way its
+  core count does. `Preferred` can name only one node, so a command that took
+  cores off two states no preference; `Bound` names every node it was given.
 - `dry_run` and the table say which node a command landed on. A machine with one
   node has nothing to say there, so it gets no node column and no node in the
   `dry_run` line.
