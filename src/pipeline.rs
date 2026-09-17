@@ -109,6 +109,7 @@ impl<'a> PipelineBuilder<'a> {
                 if cmd.cores.is_none() {
                     cmd.cores = inherited;
                 }
+                cmd.numa = cores.spans_nodes();
 
                 // the only ask the machine could never satisfy: anything else is
                 // a matter of waiting, since commands hand their cores back
@@ -156,11 +157,17 @@ impl Pipeline<'_> {
                 }
                 let lease = self.cores.try_acquire(cmd.cores.unwrap_or(0));
                 let cpus = lease.as_ref().map(|l| l.cpus()).unwrap_or_default();
+                let nodes = lease.as_ref().map(|l| l.nodes()).unwrap_or_default();
                 // the pinning is no longer part of the command, so it gets said
                 // beside it rather than shown in it
-                let pin = match cpus {
-                    [] => String::new(),
-                    cpus => format!(" [cpu {}]", crate::cpu::list(cpus)),
+                let pin = match (cpus, nodes) {
+                    ([], _) => String::new(),
+                    (cpus, []) => format!(" [cpu {}]", crate::cpu::list(cpus)),
+                    (cpus, nodes) => format!(
+                        " [cpu {} node {}]",
+                        crate::cpu::list(cpus),
+                        crate::cpu::list(nodes)
+                    ),
                 };
                 println!("{} {}{pin}", cmd.label(), cmd.line());
 

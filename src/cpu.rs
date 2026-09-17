@@ -4,8 +4,22 @@
 //! track of what is free, hands out that many, and takes them back when the
 //! command is done. The pinning happens in the child itself, between the fork
 //! and the exec.
+//!
+//! Which ones it hands out is not arbitrary. A command's cores come off one
+//! memory node wherever enough of that node is free, so its threads and the
+//! memory they touch stay on the same side of the interconnect.
 
+use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
+
+/// One cpu in the pool, and where it sits on the machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cpu {
+    id: usize,
+
+    /// The memory node it belongs to.
+    node: usize,
+}
 
 /// The cores a pipeline has to hand out, and which of them are in use.
 ///
@@ -17,7 +31,7 @@ use std::sync::{Condvar, Mutex};
 /// hyperthreading has 24 of these rather than 32.
 #[derive(Debug, Default)]
 pub(crate) struct Cores {
-    pool: Vec<usize>,
+    pool: Vec<Cpu>,
     /// The cpus currently leased out, and something to wait on for one to come
     /// back. A command that cannot be placed yet sleeps here rather than
     /// spinning, which would burn a core to wait for a core.
@@ -33,6 +47,15 @@ pub(crate) struct Cores {
 pub(crate) struct Lease<'a> {
     cores: &'a Cores,
     cpus: Vec<usize>,
+
+    /// The memory nodes those cpus sit on, or nothing at all on a machine with
+    /// only one.
+    //
+    // empty is what keeps a single node machine out of
+    // set_mempolicy and out of the table's node column:
+    // naming its only node asks for the placement every
+    // allocation already gets
+    nodes: Vec<usize>,
 }
 
 impl Cores {
@@ -40,12 +63,17 @@ impl Cores {
         let mut pool = Vec::new();
         let mut spoken_for = Vec::new();
 
+        let nodes = nodes();
+
         for cpu in allowed() {
             if spoken_for.contains(&cpu) {
                 continue;
             }
             spoken_for.extend(siblings(cpu));
-            pool.push(cpu);
+            pool.push(Cpu {
+                id: cpu,
+                node: nodes.get(&cpu).copied().unwrap_or(0),
+            });
         }
 
         Cores {
@@ -55,12 +83,26 @@ impl Cores {
         }
     }
 
-    /// A pool of exactly these cpus, so the handing-out can be exercised without
-    /// depending on what the machine happens to have.
+    /// A pool of exactly these cpus, all on one node, so the handing-out can be
+    /// exercised without depending on what the machine happens to have.
     #[cfg(test)]
     pub(crate) fn with_pool(pool: Vec<usize>) -> Cores {
+        let pool = pool.into_iter().map(|id| (id, 0)).collect::<Vec<_>>();
+        Cores::with_layout(&pool)
+    }
+
+    /// A pool laid out as `(cpu, node)`, for placing commands on a machine this
+    /// one is not.
+    #[cfg(test)]
+    pub(crate) fn with_layout(layout: &[(usize, usize)]) -> Cores {
         Cores {
-            pool,
+            pool: layout
+                .iter()
+                .map(|(id, node)| Cpu {
+                    id: *id,
+                    node: *node,
+                })
+                .collect(),
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
         }
@@ -103,13 +145,10 @@ impl Cores {
     }
 
     fn grab(&self, taken: &mut Vec<usize>, size: usize) -> Option<Lease<'_>> {
-        // lowest first, so a run with the machine to itself places its commands
-        // the same way every time
-        let free: Vec<usize> = self
+        let free: Vec<Cpu> = self
             .pool
             .iter()
-            .filter(|cpu| !taken.contains(cpu))
-            .take(size)
+            .filter(|cpu| !taken.contains(&cpu.id))
             .copied()
             .collect();
 
@@ -117,11 +156,34 @@ impl Cores {
             return None;
         }
 
-        taken.extend(&free);
+        let placed = place(&free, size);
+
+        // lowest first, so a run with the machine to itself
+        // places its commands the same way every time and the
+        // cpu column reads in order
+        let mut cpus: Vec<usize> = placed.iter().map(|cpu| cpu.id).collect();
+        cpus.sort_unstable();
+
+        let mut nodes: Vec<usize> = match self.spans_nodes() {
+            true => placed.iter().map(|cpu| cpu.node).collect(),
+            false => Vec::new(),
+        };
+        nodes.sort_unstable();
+        nodes.dedup();
+
+        taken.extend(&cpus);
         Some(Lease {
             cores: self,
-            cpus: free,
+            cpus,
+            nodes,
         })
+    }
+
+    /// Whether the pool covers more than one memory node.
+    pub(crate) fn spans_nodes(&self) -> bool {
+        let mut nodes = self.pool.iter().map(|cpu| cpu.node);
+        let first = nodes.next();
+        nodes.any(|node| Some(node) != first)
     }
 
     /// Wake anything waiting on cores that are never coming, so a stopping run
@@ -142,12 +204,88 @@ impl Lease<'_> {
     pub(crate) fn cpus(&self) -> &[usize] {
         &self.cpus
     }
+
+    pub(crate) fn nodes(&self) -> &[usize] {
+        &self.nodes
+    }
 }
 
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
         self.cores.release(&self.cpus);
     }
+}
+
+/// The `size` cpus to hand out, off one memory node wherever one of them has
+/// that many free.
+///
+/// Cores on one node reach their memory without crossing the interconnect. That
+/// is worth choosing but not worth queueing for, so this takes the best
+/// arrangement free at the moment the request can be met, and never holds a
+/// command back waiting for a better one.
+fn place(free: &[Cpu], size: usize) -> Vec<Cpu> {
+    // the smallest node that still fits, so a narrow request
+    // leaves the wide nodes whole for a wide one
+    for node in nodewise(free) {
+        if node.len() >= size {
+            return node[..size].to_vec();
+        }
+    }
+
+    // nothing holds the whole request, so spend the fullest
+    // node first and cross as few as the size forces
+    let mut nodes = nodewise(free);
+    nodes.sort_by_key(|node| (std::cmp::Reverse(node.len()), node[0].id));
+
+    let mut out: Vec<Cpu> = nodes.into_iter().flatten().collect();
+    out.truncate(size);
+    out
+}
+
+/// The free cpus grouped by node, smallest group first, and lowest node first
+/// among groups of a size so the same request lands the same way twice.
+fn nodewise(free: &[Cpu]) -> Vec<Vec<Cpu>> {
+    let mut nodes: BTreeMap<usize, Vec<Cpu>> = BTreeMap::new();
+
+    for cpu in free {
+        nodes.entry(cpu.node).or_default().push(*cpu);
+    }
+
+    let mut out: Vec<Vec<Cpu>> = nodes.into_values().collect();
+    out.sort_by_key(|node| (node.len(), node[0].id));
+    out
+}
+
+/// Which memory node each cpu belongs to.
+///
+/// A kernel built without NUMA has no `node` directory to read, and every cpu
+/// comes back missing from this and placed on node 0, which is the whole of the
+/// truth on such a machine.
+fn nodes() -> BTreeMap<usize, usize> {
+    let mut out = BTreeMap::new();
+
+    let Ok(dir) = std::fs::read_dir("/sys/devices/system/node") else {
+        return out;
+    };
+
+    for entry in dir.flatten() {
+        let name = entry.file_name();
+        let Some(node) = name.to_str().and_then(|name| name.strip_prefix("node")) else {
+            continue;
+        };
+        let Ok(node) = node.parse::<usize>() else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(entry.path().join("cpulist")) else {
+            continue;
+        };
+
+        for cpu in parse_list(&text) {
+            out.insert(cpu, node);
+        }
+    }
+
+    out
 }
 
 /// The affinity mask for `cpus`, built while there is still a whole program to
@@ -164,6 +302,31 @@ pub(crate) fn mask(cpus: &[usize]) -> libc::cpu_set_t {
         unsafe { libc::CPU_SET(*cpu, &mut set) };
     }
     set
+}
+
+/// The node mask for `nodes`, and how many bits of it `set_mempolicy` should
+/// read.
+///
+/// Built out here for the reason the cpu mask is: what installs it runs after
+/// the fork.
+#[cfg(target_os = "linux")]
+pub(crate) fn nodemask(nodes: &[usize]) -> (Vec<libc::c_ulong>, usize) {
+    let Some(highest) = nodes.iter().copied().max() else {
+        return (Vec::new(), 0);
+    };
+
+    // the kernel reads ceil(bits / word) words out of the mask,
+    // so it has to be at least that long or the read runs off
+    // the end of it
+    let word = libc::c_ulong::BITS as usize;
+    let bits = highest + 1;
+    let mut mask = vec![0 as libc::c_ulong; bits.div_ceil(word)];
+
+    for node in nodes {
+        mask[node / word] |= 1 << (node % word);
+    }
+
+    (mask, bits)
 }
 
 /// A cpu list the way the kernel writes one: `0`, `0,2`, empty for nothing.
@@ -260,6 +423,85 @@ mod tests {
         assert_eq!(parse_list("0,junk,2"), vec![0, 2]);
         // a range that runs backwards yields nothing, not a panic
         assert_eq!(parse_list("5-2"), Vec::<usize>::new());
+    }
+
+    /// Two nodes of four, the way a small two socket machine comes out.
+    fn two_nodes() -> Cores {
+        Cores::with_layout(&[
+            (0, 0),
+            (2, 0),
+            (4, 0),
+            (6, 0),
+            (8, 1),
+            (10, 1),
+            (12, 1),
+            (14, 1),
+        ])
+    }
+
+    #[test]
+    fn a_command_takes_its_cores_off_one_node() {
+        let cores = two_nodes();
+        let lease = cores.acquire(4, &|| false).expect("a node's worth");
+
+        assert_eq!(lease.cpus(), [0, 2, 4, 6]);
+        assert_eq!(lease.nodes(), [0]);
+    }
+
+    #[test]
+    fn a_narrow_request_leaves_the_wide_node_whole() {
+        // two free on one node and four on the other: taking the
+        // pair off the small one keeps the big one able to hold a
+        // request that only it could
+        let cores = Cores::with_layout(&[(0, 0), (2, 0), (4, 1), (6, 1), (8, 1), (10, 1)]);
+
+        let small = cores.acquire(2, &|| false).expect("the pair");
+        assert_eq!(small.cpus(), [0, 2]);
+
+        let wide = cores
+            .acquire(4, &|| false)
+            .expect("the other node, still whole");
+        assert_eq!(wide.cpus(), [4, 6, 8, 10]);
+        assert_eq!(wide.nodes(), [1]);
+    }
+
+    #[test]
+    fn a_request_no_node_can_hold_crosses_as_few_as_it_must() {
+        let cores = two_nodes();
+        let lease = cores.acquire(6, &|| false).expect("more than a node holds");
+
+        assert_eq!(lease.cpus(), [0, 2, 4, 6, 8, 10]);
+        assert_eq!(
+            lease.nodes(),
+            [0, 1],
+            "one node filled before the next is touched"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_one_node_reports_none() {
+        let cores = Cores::with_pool(vec![0, 2, 4, 6]);
+        let lease = cores.acquire(2, &|| false).expect("two of four");
+
+        assert_eq!(lease.cpus(), [0, 2]);
+        assert!(
+            lease.nodes().is_empty(),
+            "nothing to prefer, and nothing for the table to say"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn nodemask_sets_a_bit_per_node() {
+        assert_eq!(nodemask(&[0]), (vec![0b1], 1));
+        assert_eq!(nodemask(&[1]), (vec![0b10], 2));
+        assert_eq!(nodemask(&[0, 1]), (vec![0b11], 2));
+        // a node past the first word grows the mask rather than
+        // writing off the end of it
+        let past = libc::c_ulong::BITS as usize;
+        assert_eq!(nodemask(&[past]), (vec![0, 1], past + 1));
+        // no nodes is the single node machine asking for no policy
+        assert_eq!(nodemask(&[]), (Vec::new(), 0));
     }
 
     #[test]

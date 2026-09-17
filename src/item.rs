@@ -95,4 +95,19 @@ impl<'a> Item<'a> {
             Item::Closure(_) => None,
         }
     }
+
+    pub fn nodes(self) -> Option<&'a [usize]> {
+        match self {
+            Item::Cmd(cmd) => Some(&cmd.nodes),
+            Item::Closure(_) => None,
+        }
+    }
+
+    /// Whether the machine this ran on has more than one memory node.
+    pub fn numa(self) -> bool {
+        match self {
+            Item::Cmd(cmd) => cmd.numa,
+            Item::Closure(_) => false,
+        }
+    }
 }

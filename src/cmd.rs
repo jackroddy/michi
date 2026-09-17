@@ -115,6 +115,18 @@ pub struct Cmd {
     /// The cpus it was given, filled in when it runs and only for as long as it
     /// held them.
     pub(crate) cpus: Vec<usize>,
+
+    /// The memory nodes those cpus sit on, and nothing on a machine with one
+    /// node.
+    pub(crate) nodes: Vec<usize>,
+
+    /// Whether the machine has more than one memory node.
+    //
+    // a fact about the machine rather than the command, kept
+    // here because a sink is handed items and never the pool,
+    // and the table has to settle its columns before the run
+    // when no command has landed anywhere yet
+    pub(crate) numa: bool,
     /// The program's own level, then one per subcommand.
     //
     // never empty: new pushes the program's level
@@ -136,6 +148,8 @@ impl Cmd {
             program: program.as_ref().to_owned(),
             cores: None,
             cpus: Vec::new(),
+            nodes: Vec::new(),
+            numa: false,
             levels: vec![Level::new(None)],
             env: BTreeMap::new(),
             dir: None,

@@ -21,6 +21,14 @@ use crate::cpu::{Cores, Lease};
 /// How long anything gets to leave on a SIGTERM before it gets a SIGKILL.
 const SIGTERM_GRACE: Duration = Duration::from_secs(5);
 
+/// `MPOL_PREFERRED` from `linux/mempolicy.h`, which libc carries no constant
+/// for.
+//
+// preferred rather than bind: a command that outgrows its
+// node should come out slower, not dead
+#[cfg(target_os = "linux")]
+const MPOL_PREFERRED: libc::c_int = 1;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timing {
     pub wall_s: f64,
@@ -73,6 +81,7 @@ impl Cores {
         // go back on the way out of scope
         let lease = self.acquire(cmd.cores.unwrap_or(0), &|| false);
         cmd.cpus = pinned(&lease);
+        cmd.nodes = nodes(&lease);
 
         let status = match cmd.spawn() {
             Err(e) => Status::Failed(format!("{e:#}")),
@@ -165,6 +174,7 @@ impl<'a> Batch<'a> {
             return;
         }
         cmd.cpus = pinned(&lease);
+        cmd.nodes = nodes(&lease);
         started();
 
         let status = match cmd.spawn() {
@@ -242,6 +252,13 @@ fn pinned(lease: &Option<Lease>) -> Vec<usize> {
     }
 }
 
+fn nodes(lease: &Option<Lease>) -> Vec<usize> {
+    match lease {
+        Some(lease) => lease.nodes().to_vec(),
+        None => Vec::new(),
+    }
+}
+
 fn outcome(waited: anyhow::Result<(Timing, bool)>) -> Status {
     match waited {
         Ok((timing, true)) => Status::TimedOut(timing),
@@ -292,24 +309,47 @@ impl Cmd {
 
         // the child pins itself on its way to exec, so the pid we end up
         // waiting on is the program's own and every number we measure is still
-        // the program's. the mask is made out here because the hook runs
+        // the program's. the masks are made out here because the hook runs
         // between the fork and the exec, where anything that allocates or takes
-        // a lock can hang for good. affinity survives an exec, so setting it
-        // now is enough.
+        // a lock can hang for good. affinity and memory policy both survive an
+        // exec, so setting them now is enough.
         //
-        // (a machine with more than one memory node wants `set_mempolicy` here
-        // too, bound to the node its cpus sit on.)
         // note: no pinning syscall exists on macOS, so cpus are still leased
         // and counted there but the child is never actually bound to one.
         #[cfg(target_os = "linux")]
         if !self.cpus.is_empty() {
             let set = crate::cpu::mask(&self.cpus);
+
+            // MPOL_PREFERRED names one node, so a command that
+            // had to take cores off two says nothing and leaves
+            // the kernel to give each thread pages from the node
+            // that thread touched them on
+            let policy = match self.nodes.as_slice() {
+                [node] => Some(crate::cpu::nodemask(&[*node])),
+                _ => None,
+            };
+
             unsafe {
                 proc.pre_exec(move || {
-                    match libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set) {
-                        0 => Ok(()),
-                        _ => Err(std::io::Error::last_os_error()),
+                    if libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set) != 0 {
+                        return Err(std::io::Error::last_os_error());
                     }
+
+                    if let Some((mask, bits)) = &policy {
+                        // glibc wraps neither of the mempolicy
+                        // calls, so this is the raw syscall
+                        let rc = libc::syscall(
+                            libc::SYS_set_mempolicy,
+                            MPOL_PREFERRED,
+                            mask.as_ptr(),
+                            *bits,
+                        );
+                        if rc != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+
+                    Ok(())
                 });
             }
         }

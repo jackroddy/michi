@@ -194,6 +194,11 @@ struct Columns {
     /// This asks what was requested and not where anything landed, because the
     /// columns are settled before the run and nothing has landed anywhere yet.
     cpus: bool,
+
+    /// Whether to say which memory node each command landed on. A machine with
+    /// one node has nothing to say here, so it gets no column rather than one
+    /// reading `0` all the way down.
+    nodes: bool,
 }
 
 impl Columns {
@@ -203,17 +208,20 @@ impl Columns {
         let mut keys = BTreeSet::new();
         let mut tags = BTreeSet::new();
         let mut cpus = false;
+        let mut nodes = false;
 
         for item in steps.iter().flat_map(Step::items) {
             keys.extend(item.fields().keys().cloned());
             tags.extend(item.tags().iter().cloned());
             cpus |= item.cores() > 0;
+            nodes |= item.cores() > 0 && item.numa();
         }
 
         Columns {
             keys: keys.into_iter().collect(),
             tags: tags.into_iter().collect(),
             cpus,
+            nodes,
         }
     }
 
@@ -222,6 +230,9 @@ impl Columns {
         header.extend(self.keys.iter().cloned());
         header.extend(self.tags.iter().cloned());
         header.extend(METRICS.iter().map(|s| s.to_string()));
+        if self.nodes {
+            header.insert(header.len() - 1, "node".into());
+        }
         if self.cpus {
             header.insert(header.len() - 1, "cpus".into());
         }
@@ -242,6 +253,20 @@ impl Columns {
         let text = match cpus {
             Some([]) | None => dash(),
             Some(cpus) => crate::cpu::list(cpus),
+        };
+        cells.insert(cells.len() - 1, Cell::left(text));
+    }
+
+    /// Slots the node cell in ahead of the cpus one, for the same reason and
+    /// with the same guess at its width.
+    fn put_nodes(&self, cells: &mut Vec<Cell>, nodes: Option<&[usize]>) {
+        if !self.nodes {
+            return;
+        }
+
+        let text = match nodes {
+            Some([]) | None => dash(),
+            Some(nodes) => crate::cpu::list(nodes),
         };
         cells.insert(cells.len() - 1, Cell::left(text));
     }
@@ -376,7 +401,8 @@ impl Columns {
 
         cells.extend(metrics.cells());
         // the cpus a whole step held is not the cpus any one command held, so
-        // like exit and argv beside it, the step line leaves it alone
+        // like exit and argv beside it, the step line leaves them alone
+        self.put_nodes(&mut cells, None);
         self.put_cpus(&mut cells, None);
         cells
     }
@@ -404,6 +430,7 @@ impl Columns {
             }
             .cells(),
         );
+        self.put_nodes(&mut cells, item.nodes());
         self.put_cpus(&mut cells, item.cpus());
         cells
     }
@@ -763,6 +790,43 @@ mod tests {
             lines[2]
         );
         assert!(lines[2].contains("1.50"), "the numbers still follow: {}", lines[2]);
+    }
+
+    /// One pinned command that landed on node 1, on a machine that has more
+    /// than one to land on.
+    fn placed<'a>(numa: bool) -> Step<'a> {
+        let mut step = Step::serial([cmd("/x", "pinned").cores(2)]).name("s");
+        for cmd in step.cmds_mut() {
+            cmd.numa = numa;
+            cmd.cpus = vec![4, 6];
+            cmd.nodes = if numa { vec![1] } else { Vec::new() };
+        }
+        finish(&mut step, 1);
+        step
+    }
+
+    #[test]
+    fn a_node_column_says_where_a_command_landed() {
+        let text = write("node-on", Mode::default(), &[placed(true)]);
+        let lines: Vec<&str> = text.lines().collect();
+
+        let at = lines[0].find("node").expect("a node heading");
+        assert!(lines[2][at..].starts_with('1'), "{}", lines[2]);
+        assert!(
+            lines[0][at..].starts_with("node cpus"),
+            "node comes before cpus"
+        );
+    }
+
+    #[test]
+    fn one_node_gets_no_node_column_at_all() {
+        let text = write("node-off", Mode::default(), &[placed(false)]);
+
+        assert!(!text.contains("node"), "a column of nothing but 0: {text}");
+        assert!(
+            text.contains("cpus"),
+            "the cpus column still stands: {text}"
+        );
     }
 
     #[test]
