@@ -164,7 +164,9 @@ impl<'a> Batch<'a> {
     /// command itself reports. A batch can wait a long time for cores, and
     /// counting that would put the two out by however long the wait was.
     pub(crate) fn execute(&self, cmd: &mut Cmd, started: impl FnOnce()) {
-        let lease = self.cores.acquire(cmd.cores.unwrap_or(0), &|| self.cancelled());
+        let lease = self
+            .cores
+            .acquire(cmd.cores.unwrap_or(0), &|| self.cancelled());
 
         // an empty lease means one of two things: the command asked for no
         // pinning, or the wait was cut short by a cancel. only the second is a
@@ -505,9 +507,7 @@ fn reap(pid: libc::pid_t, start: Instant, exited: impl FnOnce()) -> anyhow::Resu
             libc::WEXITED | libc::WNOWAIT,
         )
     };
-    let waited = (rc == 0)
-        .then_some(())
-        .ok_or_else(io::Error::last_os_error);
+    let waited = (rc == 0).then_some(()).ok_or_else(io::Error::last_os_error);
 
     // taken here rather than after the reap, so it is when the process ended
     let wall_s = start.elapsed().as_secs_f64();
@@ -651,7 +651,11 @@ mod tests {
         let at = Instant::now();
         cores.execute(&mut cmd);
 
-        assert!(matches!(cmd.status(), Status::Finished(_)), "{:?}", cmd.status());
+        assert!(
+            matches!(cmd.status(), Status::Finished(_)),
+            "{:?}",
+            cmd.status()
+        );
         assert!(
             at.elapsed() < Duration::from_secs(5),
             "took {:?}, so the deadline was slept out",
@@ -760,7 +764,10 @@ mod tests {
             exit: 0,
         }));
 
-        assert!(!path.exists(), "nothing failed, so there is nothing to read");
+        assert!(
+            !path.exists(),
+            "nothing failed, so there is nothing to read"
+        );
     }
 
     #[test]

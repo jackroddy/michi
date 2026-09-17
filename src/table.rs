@@ -669,7 +669,11 @@ mod tests {
         let text = write("collapse", Mode::default(), &steps());
         let rows: Vec<&str> = text.lines().skip(2).collect();
 
-        assert_eq!(rows.len(), 4, "one collapsed step plus a step row and two commands");
+        assert_eq!(
+            rows.len(),
+            4,
+            "one collapsed step plus a step row and two commands"
+        );
         assert!(rows[0].starts_with("[1](setup) mkdir"), "{}", rows[0]);
         assert!(rows[1].starts_with("[2](burn)  -"), "{}", rows[1]);
     }
@@ -715,7 +719,10 @@ mod tests {
 
     #[test]
     fn one_header_serves_every_block() {
-        assert_eq!(header_lines(&write("one-header", Mode::default(), &steps())), 1);
+        assert_eq!(
+            header_lines(&write("one-header", Mode::default(), &steps())),
+            1
+        );
     }
 
     #[test]
@@ -759,7 +766,11 @@ mod tests {
         let heads: Vec<&str> = text.lines().filter(|l| l.starts_with("# step")).collect();
 
         assert_eq!(heads.len(), 2, "ragged blocks each need their own header");
-        assert!(!heads[0].contains("job"), "setup has no fields: {}", heads[0]);
+        assert!(
+            !heads[0].contains("job"),
+            "setup has no fields: {}",
+            heads[0]
+        );
         assert!(heads[1].contains("job"), "burn does: {}", heads[1]);
     }
 
@@ -789,7 +800,11 @@ mod tests {
             "{}",
             lines[2]
         );
-        assert!(lines[2].contains("1.50"), "the numbers still follow: {}", lines[2]);
+        assert!(
+            lines[2].contains("1.50"),
+            "the numbers still follow: {}",
+            lines[2]
+        );
     }
 
     /// One pinned command that landed on node 1, on a machine that has more

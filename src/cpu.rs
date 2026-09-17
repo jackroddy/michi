@@ -543,7 +543,11 @@ mod tests {
         let big = cores.acquire(3, &|| false).expect("three");
 
         assert_eq!(small.cpus(), [0]);
-        assert_eq!(big.cpus(), [2, 4, 6], "should start right after the small one");
+        assert_eq!(
+            big.cpus(),
+            [2, 4, 6],
+            "should start right after the small one"
+        );
     }
 
     #[test]
@@ -558,7 +562,10 @@ mod tests {
         let cores = Cores::with_pool(vec![0, 2]);
         assert!(cores.acquire(0, &|| false).is_none());
         // and it did not quietly take anything on the way past
-        assert_eq!(cores.try_acquire(2).map(|l| l.cpus().to_vec()), Some(vec![0, 2]));
+        assert_eq!(
+            cores.try_acquire(2).map(|l| l.cpus().to_vec()),
+            Some(vec![0, 2])
+        );
     }
 
     #[test]

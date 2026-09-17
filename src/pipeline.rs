@@ -541,7 +541,11 @@ mod tests {
     fn asking_for_more_cores_than_the_machine_has_fails_the_build() {
         let too_many = Cores::read().len() + 1;
         let built = PipelineBuilder::new()
-            .step(Step::serial([Cmd::new("/a").name("greedy")]).name("big").cores(too_many))
+            .step(
+                Step::serial([Cmd::new("/a").name("greedy")])
+                    .name("big")
+                    .cores(too_many),
+            )
             .no_stderr()
             .build();
 
@@ -583,7 +587,10 @@ mod tests {
             .unwrap();
 
         let Output::OnFailure(path) = &pipeline.steps[0].cmds()[0].stderr else {
-            panic!("expected a failure log, got {:?}", pipeline.steps[0].cmds()[0].stderr);
+            panic!(
+                "expected a failure log, got {:?}",
+                pipeline.steps[0].cmds()[0].stderr
+            );
         };
         assert!(path.ends_with("1-s.1-x.stderr"), "{}", path.display());
         assert_eq!(pipeline.steps[0].cmds()[1].stderr, Output::Inherit);
@@ -631,7 +638,10 @@ mod tests {
         let log = Arc::clone(&recorder.log);
 
         PipelineBuilder::new()
-            .step(Step::serial([sh("bad", "exit 1"), sh("after", "exit 0")]).on_error(OnError::Continue))
+            .step(
+                Step::serial([sh("bad", "exit 1"), sh("after", "exit 0")])
+                    .on_error(OnError::Continue),
+            )
             .step(Step::serial([sh("later", "exit 0")]))
             .no_stderr()
             .sink(recorder)
@@ -740,7 +750,11 @@ mod tests {
                 "{name} was announced as NotRun"
             );
         }
-        assert_eq!(log.records.len(), names.len(), "something extra was announced");
+        assert_eq!(
+            log.records.len(),
+            names.len(),
+            "something extra was announced"
+        );
     }
 
     #[test]
@@ -799,7 +813,10 @@ mod tests {
         let log = log.lock().unwrap();
         assert_eq!(log.records.len(), 6);
         for i in 0..6 {
-            assert!(matches!(log.of(&format!("job-{i}"))[..], [Status::Finished(_)]));
+            assert!(matches!(
+                log.of(&format!("job-{i}"))[..],
+                [Status::Finished(_)]
+            ));
         }
     }
 
@@ -1034,4 +1051,3 @@ impl Sinks {
         self.0.iter_mut().try_for_each(|s| s.finish())
     }
 }
-
