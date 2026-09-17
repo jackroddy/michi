@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dry_run` line.
 - `Item::nodes()` and `Item::numa()`, so a sink of your own can report placement
   the way the built-in table does.
+- `Progress` names the node beside the time and memory on a finished line. It
+  says nothing while a command is still running, because a batch hands its
+  placement back only once the command is done, and nothing at all on a machine
+  with one node.
 
 ### Changed
 

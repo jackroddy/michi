@@ -339,7 +339,7 @@ impl Sink for Progress {
             state.emit(&title);
         }
 
-        let line = state.line(&name, item.status());
+        let line = state.line(&name, item.status(), item.nodes().unwrap_or_default());
         state.emit(&line);
 
         // only if it is still there — a failure that said nothing has had its
@@ -592,8 +592,8 @@ impl State {
         lines
     }
 
-    /// One finished thing, and how it went.
-    fn line(&self, name: &str, status: &Status) -> String {
+    /// One finished thing, how it went, and which memory node it went there on.
+    fn line(&self, name: &str, status: &Status, nodes: &[usize]) -> String {
         let mark = self.marks.of(status);
 
         let verdict = match status {
@@ -609,15 +609,33 @@ impl State {
             },
         };
 
+        // a machine with one node hands out no nodes at all, so
+        // this is empty there and the line reads as it always has
+        let placed = match nodes {
+            [] => String::new(),
+            nodes => format!("node {}", crate::cpu::list(nodes)),
+        };
+
         let detail = match (status, status.timing()) {
             (Status::NotRun, _) => "not run".to_string(),
             (Status::Skipped, _) => "skipped".to_string(),
             (Status::Failed(why), _) => why.clone(),
-            (_, Some(t)) => format!(
-                "{:>8.2}s {:>9}  {verdict}",
-                t.wall_s,
-                t.max_rss_kb.map(bytes).unwrap_or_else(dash)
-            ),
+            (_, Some(t)) => {
+                let mut detail = format!(
+                    "{:>8.2}s {:>9}",
+                    t.wall_s,
+                    t.max_rss_kb.map(bytes).unwrap_or_else(dash)
+                );
+                // the verdict stays last, where a failure is the
+                // final thing on the line rather than buried
+                for part in [&placed, &verdict] {
+                    if !part.is_empty() {
+                        detail.push_str("  ");
+                        detail.push_str(part);
+                    }
+                }
+                detail
+            }
             (_, None) => dash(),
         };
 
