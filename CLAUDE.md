@@ -13,6 +13,14 @@ one.
 `main` carries releases and nothing else. Push to it when cutting a release,
 and leave it alone the rest of the time.
 
+## Releases
+
+michi follows [semantic versioning](https://semver.org/spec/v2.0.0.html). While
+the crate is below 1.0, a breaking change takes the minor number.
+
+Tag every release, annotated, as `vMAJOR.MINOR.PATCH`, on the commit that was
+published.
+
 ## Formatting
 
 `rustfmt` is the format. Run `cargo fmt` before committing.
