@@ -670,3 +670,44 @@ fn span(d: Duration) -> String {
     let mins = (s / 60.0).floor();
     format!("{}m{:04.1}s", mins as u64, s - mins * 60.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execute::Timing;
+
+    fn finished() -> Status {
+        Status::Finished(Timing {
+            wall_s: 1.5,
+            user_s: Some(2.0),
+            sys_s: Some(0.25),
+            max_rss_kb: Some(2048),
+            exit: 0,
+        })
+    }
+
+    fn line(nodes: &[usize], note: Option<&str>) -> String {
+        let progress = Progress::new();
+        let state = progress.shared.state.lock().unwrap();
+        state.line("cmd", &finished(), nodes, note)
+    }
+
+    #[test]
+    fn one_node_leaves_the_line_as_it_was() {
+        assert!(!line(&[], None).contains("node"));
+    }
+
+    #[test]
+    fn a_placed_command_names_its_node() {
+        assert!(line(&[1], None).contains("  node 1"));
+    }
+
+    #[test]
+    fn a_dropped_preference_says_why_beside_the_node() {
+        let text = line(&[1], Some("node 1 not in Mems_allowed"));
+        assert!(
+            text.contains("node 1 (no memory preference: node 1 not in Mems_allowed)"),
+            "{text}"
+        );
+    }
+}
