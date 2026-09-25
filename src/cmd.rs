@@ -206,6 +206,10 @@ impl Cmd {
     /// A subcommand, like the `search` in `mmseqs search`. Call it more than
     /// once for tools that nest them. Options and paths added after it go with
     /// that subcommand rather than with the program.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "a subcommand, not subtraction"
+    )]
     pub fn sub(mut self, sub: impl Into<String>) -> Self {
         self.levels.push(Level::new(Some(sub.into())));
         self
