@@ -39,19 +39,27 @@ use crate::step::Step;
 ///
 /// Every method does nothing by default, so an implementation only writes the
 /// ones it cares about. Returning `Err` from any of them stops the run: a sink
-/// that cannot write is worth abandoning a long benchmark over.
+/// that cannot write is worth abandoning a long benchmark over. The run then
+/// fails with [`Error::Sink`](crate::Error::Sink) holding what the sink
+/// returned, and `?` on any std error or `anyhow::Error` produces one.
 pub trait Sink {
     /// Everything the pipeline is about to run, before any of it has.
     ///
     /// This is where a sink that needs to know the shape of the whole run — the
     /// full set of field keys, say — works it out.
-    fn start(&mut self, steps: &[Step<'_>]) -> anyhow::Result<()> {
+    fn start(
+        &mut self,
+        steps: &[Step<'_>],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = steps;
         Ok(())
     }
 
     /// This step is the pipeline's current concern.
-    fn step_start(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
+    fn step_start(
+        &mut self,
+        step: &Step<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = step;
         Ok(())
     }
@@ -62,7 +70,12 @@ pub trait Sink {
     /// Time measured from here matches the wall clock that eventually gets
     /// recorded, because whatever waiting there was for cores has already
     /// happened. `at` is its position in the step.
-    fn item_start(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> anyhow::Result<()> {
+    fn item_start(
+        &mut self,
+        step: &Step<'_>,
+        at: usize,
+        item: Item<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = (step, at, item);
         Ok(())
     }
@@ -70,13 +83,21 @@ pub trait Sink {
     /// One item reached its final state. `step` is the one holding it, for the
     /// name and whether its commands ran together, and `at` is its position in
     /// that step.
-    fn item_done(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> anyhow::Result<()> {
+    fn item_done(
+        &mut self,
+        step: &Step<'_>,
+        at: usize,
+        item: Item<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = (step, at, item);
         Ok(())
     }
 
     /// Every item in `step` has been announced, and its wall clock is final.
-    fn step_done(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
+    fn step_done(
+        &mut self,
+        step: &Step<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = step;
         Ok(())
     }
@@ -84,13 +105,13 @@ pub trait Sink {
     /// The run is being given up on, and why. The steps after this one still
     /// report their items as skipped, and [`finish`](Sink::finish) still
     /// follows.
-    fn abandoned(&mut self, why: &str) -> anyhow::Result<()> {
+    fn abandoned(&mut self, why: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = why;
         Ok(())
     }
 
     /// The pipeline is over, however it ended.
-    fn finish(&mut self) -> anyhow::Result<()> {
+    fn finish(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
     }
 }

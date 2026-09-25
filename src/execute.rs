@@ -12,8 +12,6 @@ use std::sync::{Condvar, Mutex};
 use std::thread::Scope;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, bail};
-
 use crate::closure::Closure;
 use crate::cmd::{Cmd, Memory, Output};
 use crate::cpu::{Cores, Lease};
@@ -84,7 +82,7 @@ impl Cores {
         settle(cmd, &lease, self);
 
         let status = match cmd.spawn() {
-            Err(e) => Status::Failed(format!("{e:#}")),
+            Err(e) => Status::Failed(e),
             Ok((pid, start)) => outcome(wait(pid, start, cmd.timeout, || {})),
         };
         cmd.report(status);
@@ -116,7 +114,7 @@ impl Closure<'_> {
 
         self.status = match out {
             Ok(Ok(())) => Status::Finished(timing),
-            Ok(Err(e)) => Status::Failed(format!("{e:#}")),
+            Ok(Err(e)) => Status::Failed(crate::error::chain(&*e)),
             Err(p) => Status::Failed(format!("panicked: {}", panic_msg(&*p))),
         };
     }
@@ -179,7 +177,7 @@ impl<'a> Batch<'a> {
         started();
 
         let status = match cmd.spawn() {
-            Err(e) => Status::Failed(format!("{e:#}")),
+            Err(e) => Status::Failed(e),
             Ok((pid, start)) => {
                 self.add(pid);
                 outcome(wait(pid, start, cmd.timeout, || self.remove(pid)))
@@ -350,11 +348,17 @@ fn call(policy: &Policy) -> Option<(libc::c_int, Vec<libc::c_ulong>, usize)> {
     Some((mode, mask, maxnode))
 }
 
-fn outcome(waited: anyhow::Result<(Timing, bool)>) -> Status {
+/// An io error with what was being done when it happened, the way a command's
+/// failure is reported: `failed to spawn /bin/x: No such file or directory`.
+fn because(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> String {
+    move |e| format!("{what}: {e}")
+}
+
+fn outcome(waited: Result<(Timing, bool), String>) -> Status {
     match waited {
         Ok((timing, true)) => Status::TimedOut(timing),
         Ok((timing, false)) => Status::Finished(timing),
-        Err(e) => Status::Failed(format!("{e:#}")),
+        Err(e) => Status::Failed(e),
     }
 }
 
@@ -387,7 +391,7 @@ pub(crate) fn stamp() -> String {
 
 impl Cmd {
     /// Start the process, giving back its pid and the moment it started.
-    fn spawn(&self) -> anyhow::Result<(libc::pid_t, Instant)> {
+    fn spawn(&self) -> Result<(libc::pid_t, Instant), String> {
         let (program, args) = self.argv();
         let mut proc = Command::new(&program);
         proc.args(args);
@@ -412,7 +416,7 @@ impl Cmd {
             let set = crate::cpu::mask(&self.cpus);
 
             if let Policy::Refused(why) = &self.policy {
-                bail!("{why}");
+                return Err(why.clone());
             }
             let policy = call(&self.policy);
 
@@ -443,9 +447,10 @@ impl Cmd {
         }
 
         let start = Instant::now();
-        let child = proc
-            .spawn()
-            .with_context(|| format!("failed to spawn {}", self.program.display()))?;
+        let child = proc.spawn().map_err(because(format!(
+            "failed to spawn {}",
+            self.program.display()
+        )))?;
 
         // the handle is dropped here and the pid outlives it. std's Child has
         // no Drop, so nothing waits on the process and nothing frees the
@@ -469,10 +474,11 @@ impl Cmd {
 }
 
 impl Output {
-    fn stdio(&self) -> anyhow::Result<Stdio> {
-        let make_dir = |path: &Path| -> anyhow::Result<()> {
+    fn stdio(&self) -> Result<Stdio, String> {
+        let make_dir = |path: &Path| -> Result<(), String> {
             if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
+                std::fs::create_dir_all(dir)
+                    .map_err(because(format!("failed to create {}", dir.display())))?;
             }
             Ok(())
         };
@@ -483,7 +489,7 @@ impl Output {
             Output::File(path) | Output::OnFailure(path) => {
                 make_dir(path)?;
                 let file = File::create(path)
-                    .with_context(|| format!("failed to create {}", path.display()))?;
+                    .map_err(because(format!("failed to create {}", path.display())))?;
                 Stdio::from(file)
             }
             Output::Append(path) => {
@@ -492,7 +498,10 @@ impl Output {
                     .create(true)
                     .append(true)
                     .open(path)
-                    .with_context(|| format!("failed to open {} for append", path.display()))?;
+                    .map_err(because(format!(
+                        "failed to open {} for append",
+                        path.display()
+                    )))?;
                 Stdio::from(file)
             }
         })
@@ -558,7 +567,7 @@ fn wait(
     start: Instant,
     limit: Option<Duration>,
     exited: impl FnOnce(),
-) -> anyhow::Result<(Timing, bool)> {
+) -> Result<(Timing, bool), String> {
     let Some(limit) = limit else {
         return reap(pid, start, exited).map(|timing| (timing, false));
     };
@@ -583,7 +592,7 @@ fn wait(
 /// signalling it. It runs whether or not the first wait worked, so a caller
 /// never has to arrange it a second time: a wait that failed leaves nothing more
 /// to be done with this pid either.
-fn reap(pid: libc::pid_t, start: Instant, exited: impl FnOnce()) -> anyhow::Result<Timing> {
+fn reap(pid: libc::pid_t, start: Instant, exited: impl FnOnce()) -> Result<Timing, String> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let rc = unsafe {
         libc::waitid(
@@ -599,14 +608,14 @@ fn reap(pid: libc::pid_t, start: Instant, exited: impl FnOnce()) -> anyhow::Resu
     let wall_s = start.elapsed().as_secs_f64();
 
     exited();
-    waited.context("waitid failed")?;
+    waited.map_err(because("waitid failed"))?;
 
     let mut status: libc::c_int = 0;
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     // std never reaps a child on its own, so nothing in it races with this
     let rc = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
     if rc < 0 {
-        return Err(io::Error::last_os_error()).context("wait4 failed");
+        return Err(because("wait4 failed")(io::Error::last_os_error()));
     }
 
     let exit = if libc::WIFEXITED(status) {

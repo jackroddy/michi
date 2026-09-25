@@ -3,13 +3,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cmd::Value;
+use crate::error::BoxError;
 use crate::execute::Status;
 
 /// `Send` because the pipeline moves a [`Step`](crate::Step) into a scoped
 /// thread to run a batch, so everything a step holds has to be `Send`, even
 /// though a closure only ever runs on the thread that reached it. `FnOnce`, so
 /// values can be moved in and back out.
-pub(crate) type Call<'a> = Box<dyn FnOnce() -> anyhow::Result<()> + Send + 'a>;
+pub(crate) type Call<'a> = Box<dyn FnOnce() -> Result<(), BoxError> + Send + 'a>;
 
 /// Rust to run in place of a command.
 ///
@@ -37,9 +38,12 @@ impl std::fmt::Debug for Closure<'_> {
 impl<'a> Closure<'a> {
     /// The name is not optional the way a command's is: there is no program
     /// behind it to fall back on.
+    ///
+    /// `f` returns a boxed [`std::error::Error`], so `?` works on any std error
+    /// or on an `anyhow::Error`, and `Err("why".into())` gives a plain message.
     pub fn new(
         name: impl Into<String>,
-        f: impl FnOnce() -> anyhow::Result<()> + Send + 'a,
+        f: impl FnOnce() -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + 'a,
     ) -> Closure<'a> {
         Closure {
             name: name.into(),

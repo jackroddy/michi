@@ -5,7 +5,7 @@
 
 use michi::{Closure, Cmd, PipelineBuilder, Progress, Step, Table};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::env::temp_dir().join("pipeline-basic");
     std::fs::remove_dir_all(&dir).ok();
     let data = dir.join("data.txt");
@@ -51,8 +51,12 @@ fn main() -> anyhow::Result<()> {
         .step(
             Step::from_closures([
                 Closure::new("count-lines", || {
+                    // ? takes the io error as it is, and a message is
+                    // just a string
                     let lines = std::fs::read_to_string(&data)?.lines().count();
-                    anyhow::ensure!(lines == 2000, "expected 2000 lines, found {lines}");
+                    if lines != 2000 {
+                        return Err(format!("expected 2000 lines, found {lines}").into());
+                    }
                     Ok(())
                 }),
                 Closure::new("wait", || {

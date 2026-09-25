@@ -6,10 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
-use anyhow::{Context, anyhow, bail};
-
 use crate::cmd::{Cmd, Output};
 use crate::cpu::{Cores, Placement};
+use crate::error::{Error, Within};
 use crate::execute::{Batch, Status, policy, stamp};
 use crate::item::Item;
 use crate::label;
@@ -83,11 +82,11 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
-    pub fn build(self) -> anyhow::Result<Pipeline<'a>> {
+    pub fn build(self) -> Result<Pipeline<'a>, Error> {
         self.build_on(Cores::read())
     }
 
-    fn build_on(self, mut cores: Cores) -> anyhow::Result<Pipeline<'a>> {
+    fn build_on(self, mut cores: Cores) -> Result<Pipeline<'a>, Error> {
         let PipelineBuilder {
             mut steps,
             sinks,
@@ -102,16 +101,18 @@ impl<'a> PipelineBuilder<'a> {
 
         if let Some(size) = pool {
             if size == 0 || size > cores.len() {
-                bail!(
-                    "the pipeline's pool wants {size} cores, and the machine has {}",
-                    cores.len()
-                );
+                return Err(Error::Pool {
+                    step: None,
+                    size,
+                    room: cores.len(),
+                    within: Within::Machine,
+                });
             }
             cores = cores.carve(size);
         }
         let around = match cores.pooled {
-            true => "the pipeline's pool",
-            false => "the machine",
+            true => Within::Pipeline,
+            false => Within::Machine,
         };
 
         for (s, step) in steps.iter_mut().enumerate() {
@@ -124,12 +125,14 @@ impl<'a> PipelineBuilder<'a> {
             // step's pool, if it carves one, or whatever it is in
             let (room, within) = match step.pool {
                 Some(size) if size == 0 || size > cores.len() => {
-                    bail!(
-                        "{step_label} pools {size} cores, and {around} has {}",
-                        cores.len()
-                    );
+                    return Err(Error::Pool {
+                        step: Some(step_label),
+                        size,
+                        room: cores.len(),
+                        within: around,
+                    });
                 }
-                Some(size) => (size, "its step's pool"),
+                Some(size) => (size, Within::Step),
                 None => (cores.len(), around),
             };
             step.pooled = step.pool.is_some() || cores.pooled;
@@ -176,10 +179,13 @@ impl<'a> PipelineBuilder<'a> {
                 // a matter of waiting, since commands hand their cores back
                 let want = cmd.cores.unwrap_or(0);
                 if want > room {
-                    bail!(
-                        "{step_label}.{} wants {want} cores, and {within} has {room}",
-                        cmd.label(),
-                    );
+                    return Err(Error::Cores {
+                        step: step_label,
+                        cmd: cmd.label(),
+                        want,
+                        room,
+                        within,
+                    });
                 }
             }
         }
@@ -269,7 +275,7 @@ impl Pipeline<'_> {
         }
     }
 
-    pub fn run(mut self) -> anyhow::Result<()> {
+    pub fn run(mut self) -> Result<(), Error> {
         // the steps come out so that the rest of the pipeline can be borrowed
         // while they are worked through. run consumes self, so nobody sees the
         // field it leaves behind
@@ -278,8 +284,10 @@ impl Pipeline<'_> {
         self.sinks.start(&steps)?;
 
         if let Some(dir) = &self.stderr_dir {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("failed to create {}", dir.display()))?;
+            std::fs::create_dir_all(dir).map_err(|source| Error::Io {
+                path: dir.clone(),
+                source,
+            })?;
         }
 
         let outcome = self.run_steps(&mut steps);
@@ -302,14 +310,14 @@ impl Pipeline<'_> {
 
         // last, so everything above has already happened
         match failure {
-            Some(failure) => Err(anyhow!(failure)),
+            Some((step, why)) => Err(Error::Step { step, why }),
             None => Ok(()),
         }
     }
 
     /// Every step in turn, stopping at the first one that ends the run. Gives
     /// back the command that ended it, if one did.
-    fn run_steps(&mut self, steps: &mut [Step<'_>]) -> anyhow::Result<Option<String>> {
+    fn run_steps(&mut self, steps: &mut [Step<'_>]) -> Result<Option<(String, String)>, Error> {
         let mut failure = None;
         let mut remaining_steps = steps.iter_mut();
 
@@ -334,7 +342,7 @@ impl Pipeline<'_> {
 
             if let Some(why) = step.aborts() {
                 self.sinks.abandoned(&why)?;
-                failure = Some(why);
+                failure = Some((step.label(), why));
                 break;
             }
         }
@@ -352,7 +360,7 @@ impl Pipeline<'_> {
     }
 
     /// One step, start to finish, with its sinks told either side.
-    fn run_step(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
+    fn run_step(&mut self, step: &mut Step<'_>) -> Result<(), Error> {
         self.sinks.step_start(step)?;
         match step.strategy() {
             Some(Strategy::Serial) => self.serial(step)?,
@@ -364,7 +372,7 @@ impl Pipeline<'_> {
     }
 
     /// One command at a time, stopping early if the step says to.
-    fn serial(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
+    fn serial(&mut self, step: &mut Step<'_>) -> Result<(), Error> {
         let start = Instant::now();
 
         for j in 0..step.cmds().len() {
@@ -387,7 +395,7 @@ impl Pipeline<'_> {
     ///
     /// Always serial: a closure runs on the thread that reached it, and nothing
     /// here spawns another.
-    fn closures(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
+    fn closures(&mut self, step: &mut Step<'_>) -> Result<(), Error> {
         let start = Instant::now();
 
         // this is the caller's own thread, so it gets its affinity
@@ -418,7 +426,7 @@ impl Pipeline<'_> {
     /// killed. Those come back as `exit 143`, which is a real failure and reads
     /// as one, so a step that stopped shows the one command that broke it and the
     /// ones it took down with it.
-    fn batch(&mut self, step: &mut Step<'_>, jobs: usize) -> anyhow::Result<()> {
+    fn batch(&mut self, step: &mut Step<'_>, jobs: usize) -> Result<(), Error> {
         /// What a worker has to say about the command it claimed. Both go back
         /// over the one channel, so the main thread stays the only place that
         /// talks to a sink.
@@ -443,7 +451,7 @@ impl Pipeline<'_> {
         let batch = Batch::new(&self.cores);
         let sinks = &mut self.sinks;
 
-        std::thread::scope(|scope| -> anyhow::Result<()> {
+        std::thread::scope(|scope| -> Result<(), Error> {
             for _ in 0..jobs {
                 let tx = tx.clone();
                 let next = &next;
@@ -520,7 +528,7 @@ impl Pipeline<'_> {
     ///
     /// Two cases end up here: the tail of a step that stopped partway, and every
     /// command of a step the pipeline never got to.
-    fn skip_rest(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
+    fn skip_rest(&mut self, step: &mut Step<'_>) -> Result<(), Error> {
         for j in 0..step.cmds().len() {
             if matches!(step.cmds()[j].status(), Status::NotRun) {
                 step.cmds_mut()[j].status = Status::Skipped;
@@ -544,6 +552,7 @@ mod tests {
     use crate::closure::Closure;
     use crate::cmd::Memory;
     use crate::cpu::Cores;
+    use crate::error::BoxError;
     use crate::step::OnError;
     use std::sync::{Arc, Mutex};
 
@@ -588,7 +597,7 @@ mod tests {
     }
 
     impl Sink for Recorder {
-        fn step_start(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
+        fn step_start(&mut self, step: &Step<'_>) -> Result<(), BoxError> {
             let mut log = self.log.lock().unwrap();
             log.order.push(format!("+{}", step.label()));
             Ok(())
@@ -599,35 +608,40 @@ mod tests {
             _step: &Step<'_>,
             _at: usize,
             item: Item<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), BoxError> {
             self.log.lock().unwrap().started.push(item.label());
             Ok(())
         }
 
-        fn item_done(&mut self, step: &Step<'_>, _at: usize, item: Item<'_>) -> anyhow::Result<()> {
+        fn item_done(
+            &mut self,
+            step: &Step<'_>,
+            _at: usize,
+            item: Item<'_>,
+        ) -> Result<(), BoxError> {
             let mut log = self.log.lock().unwrap();
             log.records
                 .push((step.label(), item.label(), item.status().clone()));
             drop(log);
 
             if self.broken_by.as_deref() == Some(item.label().as_str()) {
-                bail!("the sink cannot write");
+                return Err("the sink cannot write".into());
             }
             Ok(())
         }
 
-        fn step_done(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
+        fn step_done(&mut self, step: &Step<'_>) -> Result<(), BoxError> {
             let mut log = self.log.lock().unwrap();
             log.order.push(format!("-{}", step.label()));
             Ok(())
         }
 
-        fn abandoned(&mut self, why: &str) -> anyhow::Result<()> {
+        fn abandoned(&mut self, why: &str) -> Result<(), BoxError> {
             self.log.lock().unwrap().abandoned = Some(why.to_string());
             Ok(())
         }
 
-        fn finish(&mut self) -> anyhow::Result<()> {
+        fn finish(&mut self) -> Result<(), BoxError> {
             self.log.lock().unwrap().finished += 1;
             Ok(())
         }
@@ -1022,7 +1036,7 @@ mod tests {
 
         let error = PipelineBuilder::new()
             .step(Step::from_closures([Closure::new("boom", || {
-                bail!("no such database")
+                Err("no such database".into())
             })]))
             .step(Step::serial([sh("never", "exit 0")]))
             .no_stderr()
@@ -1054,7 +1068,7 @@ mod tests {
         PipelineBuilder::new()
             .step(
                 Step::from_closures([
-                    Closure::new("bad", || bail!("nope")),
+                    Closure::new("bad", || Err("nope".into())),
                     Closure::new("after", || Ok(())),
                 ])
                 .on_error(OnError::Continue),
@@ -1188,7 +1202,7 @@ mod tests {
         PipelineBuilder::new()
             // the first stops its own step, so its sibling never runs
             .step(Step::from_closures([
-                Closure::new("bad", || bail!("nope")),
+                Closure::new("bad", || Err("nope".into())),
                 Closure::new("sibling", || Ok(())),
             ]))
             // and this whole step is never reached
@@ -1214,35 +1228,52 @@ mod tests {
 struct Sinks(Vec<Box<dyn Sink>>);
 
 impl Sinks {
-    fn start(&mut self, steps: &[Step<'_>]) -> anyhow::Result<()> {
-        self.0.iter_mut().try_for_each(|s| s.start(steps))
+    fn start(&mut self, steps: &[Step<'_>]) -> Result<(), Error> {
+        self.0
+            .iter_mut()
+            .try_for_each(|s| s.start(steps))
+            .map_err(Error::Sink)
     }
 
-    fn step_start(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
-        self.0.iter_mut().try_for_each(|s| s.step_start(step))
+    fn step_start(&mut self, step: &Step<'_>) -> Result<(), Error> {
+        self.0
+            .iter_mut()
+            .try_for_each(|s| s.step_start(step))
+            .map_err(Error::Sink)
     }
 
-    fn item_start(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> anyhow::Result<()> {
+    fn item_start(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> Result<(), Error> {
         self.0
             .iter_mut()
             .try_for_each(|s| s.item_start(step, at, item))
+            .map_err(Error::Sink)
     }
 
-    fn item_done(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> anyhow::Result<()> {
+    fn item_done(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> Result<(), Error> {
         self.0
             .iter_mut()
             .try_for_each(|s| s.item_done(step, at, item))
+            .map_err(Error::Sink)
     }
 
-    fn step_done(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
-        self.0.iter_mut().try_for_each(|s| s.step_done(step))
+    fn step_done(&mut self, step: &Step<'_>) -> Result<(), Error> {
+        self.0
+            .iter_mut()
+            .try_for_each(|s| s.step_done(step))
+            .map_err(Error::Sink)
     }
 
-    fn abandoned(&mut self, why: &str) -> anyhow::Result<()> {
-        self.0.iter_mut().try_for_each(|s| s.abandoned(why))
+    fn abandoned(&mut self, why: &str) -> Result<(), Error> {
+        self.0
+            .iter_mut()
+            .try_for_each(|s| s.abandoned(why))
+            .map_err(Error::Sink)
     }
 
-    fn finish(&mut self) -> anyhow::Result<()> {
-        self.0.iter_mut().try_for_each(|s| s.finish())
+    fn finish(&mut self) -> Result<(), Error> {
+        self.0
+            .iter_mut()
+            .try_for_each(|s| s.finish())
+            .map_err(Error::Sink)
     }
 }

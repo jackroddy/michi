@@ -10,10 +10,9 @@
 //! to it then.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::Context;
-
+use crate::error::{BoxError, Error};
 use crate::execute::{Status, Timing};
 use crate::fmt::{bytes, cpu_pct, dash, secs};
 use crate::item::Item;
@@ -105,17 +104,21 @@ impl Table {
         self
     }
 
-    fn flush(&mut self) -> anyhow::Result<()> {
+    fn flush(&mut self) -> Result<(), BoxError> {
+        let io = |path: &Path| {
+            let path = path.to_owned();
+            move |source| Error::Io { path, source }
+        };
         if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::create_dir_all(dir).map_err(io(dir))?;
         }
-        std::fs::write(&self.path, &self.text)
-            .with_context(|| format!("failed to write {}", self.path.display()))
+        std::fs::write(&self.path, &self.text).map_err(io(&self.path))?;
+        Ok(())
     }
 }
 
 impl Sink for Table {
-    fn start(&mut self, steps: &[Step<'_>]) -> anyhow::Result<()> {
+    fn start(&mut self, steps: &[Step<'_>]) -> Result<(), BoxError> {
         self.columns = Columns::of(steps);
 
         // Ragged blocks are meant to differ, and Whole renders in one go, so
@@ -141,7 +144,7 @@ impl Sink for Table {
     // which keeps them in the order the commands were declared rather than the
     // order a batch happened to finish them in
 
-    fn step_done(&mut self, step: &Step<'_>) -> anyhow::Result<()> {
+    fn step_done(&mut self, step: &Step<'_>) -> Result<(), BoxError> {
         let columns = match self.mode {
             Mode::Ragged => Columns::of(std::slice::from_ref(step)),
             _ => self.columns.clone(),
@@ -169,7 +172,7 @@ impl Sink for Table {
         self.flush()
     }
 
-    fn finish(&mut self) -> anyhow::Result<()> {
+    fn finish(&mut self) -> Result<(), BoxError> {
         if self.mode == Mode::Whole {
             let rows = std::mem::take(&mut self.rows);
             self.text = render(&self.columns.header(), &rows, true, None);

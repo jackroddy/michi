@@ -65,6 +65,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `PipelineBuilder::build` and `Pipeline::run` return `michi::Error` in place
+  of `anyhow::Error`, and anyhow is no longer a dependency. `Error::Cores` and
+  `Error::Pool` say what did not fit and what it was carved from (`Within`),
+  `Error::Io` names the path, `Error::Sink` holds what a sink returned, and
+  `Error::Step` names the step that ended the run. `Error` implements
+  `std::error::Error`, so code using anyhow still calls michi with `?`.
+- `Closure::new` and every `Sink` method return
+  `Result<(), Box<dyn std::error::Error + Send + Sync>>` in place of
+  `anyhow::Result<()>`. `?` works on any std error and on an `anyhow::Error`,
+  and `Err("why".into())` gives a plain message. anyhow's `bail!` and `ensure!`
+  return without `?`, so inside a closure or a sink method they need a
+  function of their own that returns `anyhow::Result`, called with `?`.
 - The table's cpus column and `dry_run` write cpu lists in the form
   `taskset -c` takes, with runs compressed: `0-3` for consecutive cpus,
   `0-94:2` for every other one, and `0,2` as before. Node lists follow the same
