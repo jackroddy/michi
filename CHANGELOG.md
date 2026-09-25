@@ -44,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dry_run` line. Beside the node column, a `policy` column holds the memory
   policy each command ran under (`prefer:1`, `bind:0,1` or `default`), with the
   reason when a preference was left unset. `dry_run` shows the same policy at
-  the end of each command's line.
+  the end of each command's line, and marks a command that would wait for cores
+  another command in its step still holds.
 - `Item::nodes()`, `Item::numa()`, `Item::policy()` and `Item::policy_note()`,
   so a sink of your own can report placement the way the built-in table does.
 - `Progress` names the node beside the time and memory on a finished line. It

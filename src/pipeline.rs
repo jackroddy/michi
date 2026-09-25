@@ -180,6 +180,8 @@ impl Pipeline<'_> {
                 // the pinning is no longer part of the command, so it gets said
                 // beside it rather than shown in it
                 let pin = match (cpus, nodes) {
+                    // asked for cores the others in its step still hold
+                    ([], _) if cmd.cores.unwrap_or(0) > 0 => " [waits for cores]".to_string(),
                     ([], _) => String::new(),
                     (cpus, []) => format!(" [cpu {}]", crate::cpu::list(cpus)),
                     (cpus, nodes) => format!(
