@@ -278,6 +278,20 @@ pub(crate) enum Policy {
     Refused(String),
 }
 
+impl Policy {
+    /// How the table and `dry_run` show it: `prefer:1`, `bind:0,1` or
+    /// `default`, with the reason beside a dropped preference or refused bind.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Policy::Preferred(node) => format!("prefer:{node}"),
+            Policy::Bound(nodes) => format!("bind:{}", crate::cpu::list(nodes)),
+            Policy::Default => "default".into(),
+            Policy::Dropped(why) => format!("default ({why})"),
+            Policy::Refused(why) => format!("refused ({why})"),
+        }
+    }
+}
+
 /// The memory policy for a command placed on `nodes`, given the nodes the
 /// process may allocate from. An empty `mems` is one that could not be read,
 /// and allows every node.
@@ -286,7 +300,7 @@ pub(crate) enum Policy {
 /// kernel's own behaviour and needs no call, and `MPOL_PREFERRED` names a
 /// single node, so a command preferring one after it had to take cores off two
 /// has no way to say which.
-fn policy(memory: Memory, nodes: &[usize], mems: &[usize]) -> Policy {
+pub(crate) fn policy(memory: Memory, nodes: &[usize], mems: &[usize]) -> Policy {
     let allowed = |node: &usize| mems.is_empty() || mems.contains(node);
 
     match (memory, nodes) {

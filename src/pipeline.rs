@@ -10,7 +10,7 @@ use anyhow::{Context, anyhow, bail};
 
 use crate::cmd::{Cmd, Output};
 use crate::cpu::{Cores, Placement};
-use crate::execute::{Batch, Status, stamp};
+use crate::execute::{Batch, Status, policy, stamp};
 use crate::item::Item;
 use crate::label;
 use crate::sink::Sink;
@@ -191,9 +191,10 @@ impl Pipeline<'_> {
                     ([], _) => String::new(),
                     (cpus, []) => format!(" [cpu {}]", crate::cpu::list(cpus)),
                     (cpus, nodes) => format!(
-                        " [cpu {} node {}]",
+                        " [cpu {} node {} {}]",
                         crate::cpu::list(cpus),
-                        crate::cpu::list(nodes)
+                        crate::cpu::list(nodes),
+                        policy(cmd.memory.unwrap_or_default(), nodes, &self.cores.mems).describe()
                     ),
                 };
                 println!("{} {}{pin}", cmd.label(), cmd.line());
