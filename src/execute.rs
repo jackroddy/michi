@@ -279,15 +279,24 @@ pub(crate) enum Policy {
 }
 
 impl Policy {
-    /// How the table and `dry_run` show it: `prefer:1`, `bind:0,1` or
-    /// `default`, with the reason beside a dropped preference or refused bind.
-    pub(crate) fn describe(&self) -> String {
+    /// The policy the command runs under: `prefer:1`, `bind:0,1` or `default`.
+    /// `None` for a refused bind, which never runs.
+    pub(crate) fn label(&self) -> Option<String> {
         match self {
-            Policy::Preferred(node) => format!("prefer:{node}"),
-            Policy::Bound(nodes) => format!("bind:{}", crate::cpu::list(nodes)),
-            Policy::Default => "default".into(),
-            Policy::Dropped(why) => format!("default ({why})"),
-            Policy::Refused(why) => format!("refused ({why})"),
+            Policy::Preferred(node) => Some(format!("prefer:{node}")),
+            Policy::Bound(nodes) => Some(format!("bind:{}", crate::cpu::list(nodes))),
+            Policy::Default | Policy::Dropped(_) => Some("default".into()),
+            Policy::Refused(_) => None,
+        }
+    }
+
+    /// How the table and `dry_run` show it: the label, with the reason beside
+    /// a dropped preference or refused bind.
+    pub(crate) fn describe(&self) -> String {
+        match (self, self.label()) {
+            (Policy::Dropped(why), Some(label)) => format!("{label} ({why})"),
+            (Policy::Refused(why), _) => format!("refused ({why})"),
+            (_, label) => label.unwrap_or_default(),
         }
     }
 }

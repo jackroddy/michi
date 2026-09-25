@@ -113,12 +113,7 @@ impl<'a> Item<'a> {
         if cmd.nodes.is_empty() {
             return None;
         }
-        match &cmd.policy {
-            Policy::Preferred(node) => Some(format!("prefer:{node}")),
-            Policy::Bound(nodes) => Some(format!("bind:{}", crate::cpu::list(nodes))),
-            Policy::Default | Policy::Dropped(_) => Some("default".into()),
-            Policy::Refused(_) => None,
-        }
+        cmd.policy.label()
     }
 
     /// Why it ran without the memory preference it asked for, if it did.
