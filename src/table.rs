@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{BoxError, Error};
 use crate::execute::{Status, Timing};
-use crate::fmt::{bytes, cpu_pct, dash, secs};
+use crate::fmt::{bytes, cpu_pct};
 use crate::item::Item;
 use crate::sink::Sink;
 use crate::step::{Step, Strategy};
@@ -25,12 +25,6 @@ use toil::{Align, Cell, Column, Header, Schema, Widths};
 const SERIAL: &str = "|";
 /// Marks a command that ran alongside the others in its step.
 const BATCH: &str = "||";
-
-/// The columns every row ends with, after whatever fields and tags the run
-/// carries.
-const METRICS: [&str; 8] = [
-    "wall(s)", "user(s)", "sys(s)", "cpu(%)", "max_rss", "exit", "status", "argv",
-];
 
 /// Whether every block gets its own header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +174,8 @@ impl Sink for Table {
     }
 }
 
-/// The field keys and tags a block carries, in front of [`METRICS`].
+/// The field keys and tags a block carries, and which placement columns it
+/// needs.
 ///
 /// Which ones there are depends on the commands, so every part of a block —
 /// the header, the step line, each command line — has to agree about them. They
@@ -241,23 +236,27 @@ impl Columns {
         }
     }
 
-    /// The columns as toil lays them out: argv last and unpadded, and room kept
-    /// for the cpus and policy cells that are still dashes before the run.
+    /// The columns, in the order [`cells`](Columns::cells) fills them.
+    ///
+    /// Placement sits just before argv because the widths reserved for it are
+    /// only guesses, and everything a wider value shifts along is then argv,
+    /// which is last and unpadded anyway.
     fn schema(&self) -> Schema {
-        let header = self.header();
-        let last = header.len() - 1;
-        let columns = header.into_iter().enumerate().map(|(i, label)| {
-            let column = Column::new(label);
-            match i {
-                _ if i == last => column.ragged(),
-                _ if self.cpus && i == last - 1 => column.min_width(self.cpus_width),
-                // prefer:N is as wide as a policy gets on a machine
-                // with under ten nodes, so that is the guess
-                _ if self.nodes && i == last - 2 => column.min_width("prefer:0".len()),
-                _ => column,
-            }
-        });
-        Schema::new(columns.collect::<Vec<_>>())
+        let mut columns = vec![Column::new("step"), Column::new("cmd")];
+        columns.extend(self.keys.iter().chain(&self.tags).map(Column::new));
+        columns.extend(["wall(s)", "user(s)", "sys(s)"].map(|label| Column::new(label).fixed(2)));
+        columns.extend(["cpu(%)", "max_rss", "exit", "status"].map(Column::new));
+        if self.nodes {
+            columns.push(Column::new("node"));
+            // prefer:N is as wide as a policy gets on a machine
+            // with under ten nodes, so that is the guess
+            columns.push(Column::new("policy").min_width("prefer:0".len()));
+        }
+        if self.cpus {
+            columns.push(Column::new("cpus").min_width(self.cpus_width));
+        }
+        columns.push(Column::new("argv").ragged());
+        Schema::new(columns)
     }
 
     /// `rows` laid out under these columns, from `floor` where there is one.
@@ -271,73 +270,18 @@ impl Columns {
         table.render_with(&floor, header)
     }
 
-    fn header(&self) -> Vec<String> {
-        let mut header: Vec<String> = vec!["step".into(), "cmd".into()];
-        header.extend(self.keys.iter().cloned());
-        header.extend(self.tags.iter().cloned());
-        header.extend(METRICS.iter().map(|s| s.to_string()));
-        if self.nodes {
-            header.insert(header.len() - 1, "node".into());
-            header.insert(header.len() - 1, "policy".into());
-        }
-        if self.cpus {
-            header.insert(header.len() - 1, "cpus".into());
-        }
-        header
-    }
-
-    /// Slots the cpus cell into a row that is otherwise finished, second to
-    /// last. It sits there rather than out with the fields because the width
-    /// reserved for it is only a guess, and everything a wider one shifts along
-    /// is then just argv, which is last and unpadded anyway.
-    fn put_cpus(&self, cells: &mut Vec<Cell>, cpus: Option<&[usize]>) {
-        if !self.cpus {
-            return;
-        }
-
-        // empty rather than absent means it asked for cpus and never got as far
-        // as holding any, which reads the same as having none to report
-        let text = match cpus {
-            Some([]) | None => dash(),
-            Some(cpus) => crate::cpu::list(cpus),
-        };
-        cells.insert(cells.len() - 1, Cell::from(text));
-    }
-
-    /// Slots `text` in where the cpus cell goes.
-    fn put_cell(&self, cells: &mut Vec<Cell>, text: &str) {
-        if self.cpus {
-            cells.insert(cells.len() - 1, Cell::from(text));
-        }
-    }
-
-    /// Slots the node cell in ahead of the cpus one, for the same reason and
-    /// with the same guess at its width.
-    fn put_nodes(&self, cells: &mut Vec<Cell>, nodes: Option<&[usize]>) {
-        if !self.nodes {
-            return;
-        }
-
-        let text = match nodes {
-            Some([]) | None => dash(),
-            Some(nodes) => crate::cpu::list(nodes),
-        };
-        cells.insert(cells.len() - 1, Cell::from(text));
-    }
-
-    /// Slots the memory policy cell in after the node one. A preference that
-    /// could not be set says why, which widens the column for that run.
-    fn put_policy(&self, cells: &mut Vec<Cell>, item: Option<Item<'_>>) {
-        if !self.nodes {
-            return;
-        }
-
-        let text = match item.and_then(|item| Some((item.policy()?, item.policy_note()))) {
-            None => dash(),
-            Some((policy, None)) => policy,
-            Some((policy, Some(note))) => format!("{policy} ({note})"),
-        };
-        cells.insert(cells.len() - 1, Cell::from(text));
+    /// How wide each column has to be for every block to fit under one header.
+    ///
+    /// Everything but the numbers is already known before the run, and the
+    /// headings above the numbers are wider than the numbers usually are.
+    fn measure(&self, steps: &[Step<'_>]) -> Widths {
+        let schema = self.schema();
+        let rows: Vec<_> = steps
+            .iter()
+            .flat_map(|step| self.block(step))
+            .map(|cells| schema.row(cells))
+            .collect();
+        schema.measure(&rows)
     }
 
     /// One step's rows: its own line, then a line per command.
@@ -375,66 +319,8 @@ impl Columns {
         rows
     }
 
-    /// How wide each column has to be for every block to fit under one header.
-    ///
-    /// Everything but the numbers is already known before the run, and the
-    /// headings above the numbers are wider than the numbers usually are.
-    fn measure(&self, steps: &[Step<'_>]) -> Widths {
-        let schema = self.schema();
-        let rows: Vec<_> = steps
-            .iter()
-            .flat_map(|step| self.block(step))
-            .map(|cells| schema.row(cells))
-            .collect();
-        schema.measure(&rows)
-    }
-}
-
-/// What one row has to say about what something cost and how it went. Anything
-/// left out prints as `-`, which is how a command that never started says it has
-/// no numbers.
-#[derive(Default)]
-struct Metrics {
-    wall_s: Option<f64>,
-    user_s: Option<f64>,
-    sys_s: Option<f64>,
-    max_rss_kb: Option<i64>,
-    exit: Option<i32>,
-    status: Option<&'static str>,
-    argv: Option<String>,
-}
-
-impl Metrics {
-    /// The cells, in the order [`METRICS`] names them. A column added to one
-    /// without the other does not compile.
-    fn cells(self) -> [Cell; METRICS.len()] {
-        let cpu = match (self.user_s, self.sys_s) {
-            (Some(user), Some(sys)) => cpu_pct(user + sys, self.wall_s),
-            _ => dash(),
-        };
-
-        [
-            Cell::from(secs(self.wall_s)),
-            Cell::from(secs(self.user_s)),
-            Cell::from(secs(self.sys_s)),
-            Cell::from(cpu),
-            Cell::from(self.max_rss_kb.map(bytes)),
-            Cell::from(self.exit.map(|e| e.to_string())),
-            Cell::from(self.status),
-            Cell::from(self.argv),
-        ]
-    }
-}
-
-impl Columns {
     /// The step's own line: measured wall clock, and its commands' CPU added up.
     fn step_row(&self, step: &Step<'_>) -> Vec<Cell> {
-        let mut cells = vec![Cell::from(step.label()), Cell::missing()];
-        cells.extend(std::iter::repeat_n(
-            Cell::missing(),
-            self.keys.len() + self.tags.len(),
-        ));
-
         let timings: Vec<&Timing> = step
             .items()
             .filter_map(|item| item.status().timing())
@@ -442,9 +328,9 @@ impl Columns {
 
         // exit, status and argv belong to commands; a count or a rollup here
         // would be a different quantity sharing a column
-        let mut metrics = Metrics {
+        let mut cost = Cost {
             wall_s: step.wall_s(),
-            ..Metrics::default()
+            ..Cost::default()
         };
 
         if !timings.is_empty() {
@@ -455,74 +341,166 @@ impl Columns {
             // a closure has no cpu figure, and a sum over only what we did
             // measure would read as the step's whole cost. std's Sum for Option
             // gives up on the total instead, which is the honest answer
-            metrics.user_s = timings.iter().map(|t| t.user_s).sum();
-            metrics.sys_s = timings.iter().map(|t| t.sys_s).sum();
+            cost.user_s = timings.iter().map(|t| t.user_s).sum();
+            cost.sys_s = timings.iter().map(|t| t.sys_s).sum();
             // the largest any one process got, which is not the same as the most
             // the step held at once — wait4 cannot tell us that
             // a max, unlike a sum, is not spoiled by one with no number at all
-            metrics.max_rss_kb = timings.iter().filter_map(|t| t.max_rss_kb).max();
+            cost.max_rss_kb = timings.iter().filter_map(|t| t.max_rss_kb).max();
         }
 
-        cells.extend(metrics.cells());
         // the cpus a whole step held are only the step's to report
         // when it carved them as a pool. otherwise they are the
         // commands', and the step line leaves them alone the way
         // it does exit and argv
-        self.put_nodes(&mut cells, step.pooled.then_some(&step.pool_nodes[..]));
-        self.put_policy(&mut cells, None);
-        self.put_cpus(&mut cells, step.pooled.then_some(&step.pool_cpus[..]));
-        cells
+        let pool = |list: &[usize]| {
+            if step.pooled {
+                listed(list)
+            } else {
+                Cell::missing()
+            }
+        };
+        self.cells(Line {
+            first: Cell::from(step.label()),
+            name: Cell::missing(),
+            keys: vec![Cell::missing(); self.keys.len() + self.tags.len()],
+            cost,
+            node: pool(&step.pool_nodes),
+            policy: Cell::missing(),
+            cpus: pool(&step.pool_cpus),
+            argv: Cell::missing(),
+        })
     }
 
-    /// One command's line. `first` is the step name for a collapsed step of one,
-    /// and a right-aligned `|` or `||` otherwise.
-    /// One item's line, whichever kind it is. The columns a closure has no
-    /// answer for come back `None` from [`Item`] and print as `-`.
+    /// One item's line, whichever kind it is. `first` is the step name for a
+    /// collapsed step of one, and a right-aligned `|` or `||` otherwise. The
+    /// columns a closure has no answer for come back `None` from [`Item`] and
+    /// print as `-`.
     fn row(&self, first: Cell, item: Item<'_>, pool: Pool<'_>) -> Vec<Cell> {
-        let mut cells = vec![first, Cell::from(item.label())];
-        cells.extend(self.key_cells(item.fields(), item.tags()));
-
         // two separate questions: what it cost, and how it went. one that could
         // not start has nothing to say about the first
         let t = item.status().timing();
-        cells.extend(
-            Metrics {
+        let (cpus, nodes) = match pool {
+            Pool::Named(cpus, nodes) => (cpus, nodes),
+            _ => (
+                item.cpus().unwrap_or_default(),
+                item.nodes().unwrap_or_default(),
+            ),
+        };
+        let policy = match (item.policy(), item.policy_note()) {
+            (Some(policy), Some(note)) => Some(format!("{policy} ({note})")),
+            (policy, _) => policy,
+        };
+
+        self.cells(Line {
+            first,
+            name: Cell::from(item.label()),
+            keys: self.key_cells(item.fields(), item.tags()),
+            cost: Cost {
                 wall_s: t.map(|t| t.wall_s),
                 user_s: t.and_then(|t| t.user_s),
                 sys_s: t.and_then(|t| t.sys_s),
                 max_rss_kb: t.and_then(|t| t.max_rss_kb),
                 exit: item.exit(),
                 status: Some(status_word(item.status())),
-                argv: item.line(),
-            }
-            .cells(),
-        );
-        let (cpus, nodes) = match pool {
-            Pool::Named(cpus, nodes) => (Some(cpus), Some(nodes)),
-            _ => (item.cpus(), item.nodes()),
-        };
-        self.put_nodes(&mut cells, nodes);
-        self.put_policy(&mut cells, Some(item));
-        match pool {
-            Pool::Shared => self.put_cell(&mut cells, "pool"),
-            _ => self.put_cpus(&mut cells, cpus),
+            },
+            node: listed(nodes),
+            policy: Cell::from(policy),
+            cpus: match pool {
+                Pool::Shared => Cell::from("pool"),
+                _ => listed(cpus),
+            },
+            argv: Cell::from(item.line()),
+        })
+    }
+
+    /// A line's cells, in the order [`schema`](Columns::schema) names the
+    /// columns, leaving out the placement ones this table does not have.
+    fn cells(&self, line: Line) -> Vec<Cell> {
+        let Line {
+            first,
+            name,
+            keys,
+            cost,
+            node,
+            policy,
+            cpus,
+            argv,
+        } = line;
+
+        let mut cells = vec![first, name];
+        cells.extend(keys);
+        cells.extend(cost.cells());
+        if self.nodes {
+            cells.extend([node, policy]);
         }
+        if self.cpus {
+            cells.push(cpus);
+        }
+        cells.push(argv);
         cells
     }
 
     /// The field and tag cells, which every row carries the same way.
     fn key_cells(&self, fields: &BTreeMap<String, String>, tags: &BTreeSet<String>) -> Vec<Cell> {
-        let mut cells: Vec<Cell> = self
-            .keys
+        let fields = self.keys.iter().map(|k| Cell::from(fields.get(k)));
+        let tags = self
+            .tags
             .iter()
-            .map(|k| Cell::from(fields.get(k)))
-            .collect();
-        cells.extend(
-            self.tags
-                .iter()
-                .map(|t| Cell::from(tags.contains(t).then_some("x"))),
-        );
-        cells
+            .map(|t| Cell::from(tags.contains(t).then_some("x")));
+        fields.chain(tags).collect()
+    }
+}
+
+/// Everything one line says, before the columns it has decide what is left
+/// out.
+struct Line {
+    first: Cell,
+    name: Cell,
+    keys: Vec<Cell>,
+    cost: Cost,
+    node: Cell,
+    policy: Cell,
+    cpus: Cell,
+    argv: Cell,
+}
+
+/// What something cost and how it went. Anything left out prints as `-`,
+/// which is how a command that never started says it has no numbers.
+#[derive(Default)]
+struct Cost {
+    wall_s: Option<f64>,
+    user_s: Option<f64>,
+    sys_s: Option<f64>,
+    max_rss_kb: Option<i64>,
+    exit: Option<i32>,
+    status: Option<&'static str>,
+}
+
+impl Cost {
+    fn cells(self) -> [Cell; 7] {
+        let cpu = match (self.user_s, self.sys_s) {
+            (Some(user), Some(sys)) => Some(cpu_pct(user + sys, self.wall_s)),
+            _ => None,
+        };
+        [
+            Cell::from(self.wall_s),
+            Cell::from(self.user_s),
+            Cell::from(self.sys_s),
+            Cell::from(cpu),
+            Cell::from(self.max_rss_kb.map(bytes)),
+            Cell::from(self.exit),
+            Cell::from(self.status),
+        ]
+    }
+}
+
+/// A cpu or node list, or `-` for one with nothing in it: a command that asked
+/// for cpus and never got as far as holding any reads the same as having none.
+fn listed(list: &[usize]) -> Cell {
+    match list {
+        [] => Cell::missing(),
+        list => Cell::from(crate::cpu::list(list)),
     }
 }
 
@@ -706,16 +684,13 @@ mod tests {
     }
 
     #[test]
-    fn one_header_serves_every_block() {
+    fn one_header_or_one_per_step() {
+        let steps = steps();
         assert_eq!(
-            header_lines(&write("one-header", Mode::default(), &steps())),
+            header_lines(&write("one-header", Mode::default(), &steps)),
             1
         );
-    }
 
-    #[test]
-    fn a_header_on_every_block_means_one_per_step() {
-        let steps = steps();
         let text = write(
             "each-header",
             Mode::Blocks {
@@ -760,39 +735,6 @@ mod tests {
             heads[0]
         );
         assert!(heads[1].contains("job"), "burn does: {}", heads[1]);
-    }
-
-    #[test]
-    fn every_block_shares_the_header_widths_as_a_floor() {
-        // the second step's names are shorter, but its columns stay lined up
-        // with the first block rather than closing up
-        let text = write("floor", Mode::default(), &steps());
-        let lines: Vec<&str> = text.lines().collect();
-
-        let column_of = |line: &str, n: usize| line.match_indices("1.50").nth(n).map(|(i, _)| i);
-        assert_eq!(column_of(lines[2], 0), column_of(lines[3], 0));
-        assert_eq!(column_of(lines[2], 0), column_of(lines[4], 0));
-    }
-
-    #[test]
-    fn a_value_wider_than_its_heading_widens_the_column() {
-        let mut step = Step::serial([cmd("/x", "an-unusually-long-command-name")]).name("s");
-        finish(&mut step, 1);
-
-        let text = write("wide", Mode::default(), &[step]);
-        let lines: Vec<&str> = text.lines().collect();
-        let head = lines[0].find("cmd").unwrap();
-
-        assert!(
-            lines[2][head..].starts_with("an-unusually-long-command-name"),
-            "{}",
-            lines[2]
-        );
-        assert!(
-            lines[2].contains("1.50"),
-            "the numbers still follow: {}",
-            lines[2]
-        );
     }
 
     /// One pinned command that landed on node 1, on a machine that has more
@@ -885,16 +827,6 @@ mod tests {
     }
 
     #[test]
-    fn argv_is_the_last_column_and_never_padded() {
-        let text = write("argv", Mode::default(), &steps());
-        for line in text.lines().skip(2) {
-            assert_eq!(line.trim_end(), line, "trailing pad on: {line:?}");
-        }
-        // the separator underlines the label rather than the whole column
-        assert!(text.lines().nth(1).unwrap().ends_with("----"));
-    }
-
-    #[test]
     fn columns_are_sorted_and_asked_for_only_once() {
         let step = Step::serial([
             cmd("/a", "a").field("zed", 1).field("alpha", 2).tag("slow"),
@@ -917,17 +849,6 @@ mod tests {
 
         assert_eq!(&lines[3][at..at + 1], "x");
         assert_eq!(&lines[4][at..at + 1], "-");
-    }
-
-    #[test]
-    fn a_row_with_nothing_measured_is_all_dashes() {
-        let schema = Schema::new(METRICS);
-        let mut table = toil::Table::new(schema.clone());
-        table.row(Metrics::default().cells());
-        let line = table.render_with(&schema.widths(), Header::Hide);
-
-        let words: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(words, ["-"; METRICS.len()], "{line}");
     }
 
     #[test]

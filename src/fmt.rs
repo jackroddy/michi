@@ -8,11 +8,6 @@ pub(crate) fn dash() -> String {
     "-".to_string()
 }
 
-/// Seconds to two places, or a dash.
-pub(crate) fn secs(s: Option<f64>) -> String {
-    s.map(|s| format!("{s:.2}")).unwrap_or_else(dash)
-}
-
 /// `time`'s `%P`: the CPU something burned over the wall clock it took, so a
 /// command that kept four cores busy the whole way through reads 400%.
 ///
@@ -96,12 +91,5 @@ mod tests {
     fn cpu_pct_needs_a_clock_to_divide_by() {
         assert_eq!(cpu_pct(1.0, None), "-");
         assert_eq!(cpu_pct(1.0, Some(0.0)), "-");
-    }
-
-    #[test]
-    fn secs_is_two_places_or_a_dash() {
-        assert_eq!(secs(Some(1.5)), "1.50");
-        assert_eq!(secs(Some(0.004)), "0.00");
-        assert_eq!(secs(None), "-");
     }
 }
