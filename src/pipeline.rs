@@ -25,6 +25,7 @@ pub struct PipelineBuilder<'a> {
     sinks: Sinks,
     stderr_dir: Option<PathBuf>,
     placement: Placement,
+    pool: Option<usize>,
 }
 
 impl Default for PipelineBuilder<'_> {
@@ -34,6 +35,7 @@ impl Default for PipelineBuilder<'_> {
             sinks: Sinks::default(),
             stderr_dir: Some(PathBuf::from(STDERR_DIR)),
             placement: Placement::Pack,
+            pool: None,
         }
     }
 }
@@ -70,6 +72,17 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
+    /// Carve `cores` physical cores for the whole run, and run every step
+    /// inside them.
+    ///
+    /// A command that asks for no cores of its own runs across the whole pool,
+    /// or its step's if the step carved one, and the scheduler moves it
+    /// wherever a core is idle. Closures are pinned to it too.
+    pub fn pool(mut self, cores: usize) -> Self {
+        self.pool = Some(cores);
+        self
+    }
+
     pub fn build(self) -> anyhow::Result<Pipeline<'a>> {
         self.build_on(Cores::read())
     }
@@ -80,17 +93,46 @@ impl<'a> PipelineBuilder<'a> {
             sinks,
             stderr_dir,
             placement,
+            pool,
         } = self;
 
         let maybe_dir = stderr_dir.map(|dir| dir.join(stamp()));
         let mut stderr_wanted = false;
         cores.placement = placement;
 
+        if let Some(size) = pool {
+            if size == 0 || size > cores.len() {
+                bail!(
+                    "the pipeline's pool wants {size} cores, and the machine has {}",
+                    cores.len()
+                );
+            }
+            cores = cores.carve(size);
+        }
+        let around = match cores.pooled {
+            true => "the pipeline's pool",
+            false => "the machine",
+        };
+
         for (s, step) in steps.iter_mut().enumerate() {
             let s_idx = s + 1;
             step.index = Some(s_idx);
             let step_part = label::filename(s_idx, step.name.as_deref());
             let step_label = step.label();
+
+            // what a command in this step can have at most: the
+            // step's pool, if it carves one, or whatever it is in
+            let (room, within) = match step.pool {
+                Some(size) if size == 0 || size > cores.len() => {
+                    bail!(
+                        "{step_label} pools {size} cores, and {around} has {}",
+                        cores.len()
+                    );
+                }
+                Some(size) => (size, "its step's pool"),
+                None => (cores.len(), around),
+            };
+            step.pooled = step.pool.is_some() || cores.pooled;
 
             // a closure routes no stderr and asks for no cores, so there is
             // nothing here for one to pick up
@@ -128,16 +170,15 @@ impl<'a> PipelineBuilder<'a> {
                 if cmd.memory.is_none() {
                     cmd.memory = inherited_memory;
                 }
-                cmd.numa = cores.spans_nodes();
+                cmd.numa = cores.numa;
 
                 // the only ask the machine could never satisfy: anything else is
                 // a matter of waiting, since commands hand their cores back
                 let want = cmd.cores.unwrap_or(0);
-                if want > cores.len() {
+                if want > room {
                     bail!(
-                        "{step_label}.{} wants {want} cores, and the machine has {}",
+                        "{step_label}.{} wants {want} cores, and {within} has {room}",
                         cmd.label(),
-                        cores.len()
                     );
                 }
             }
@@ -162,7 +203,31 @@ pub struct Pipeline<'a> {
 impl Pipeline<'_> {
     pub fn dry_run(&self) {
         for step in &self.steps {
-            println!("# {}", step.label());
+            let carved = step.pool.map(|size| self.cores.carve(size));
+            let cores = carved.as_ref().unwrap_or(&self.cores);
+
+            let whole = cores.whole();
+            let pool = match &whole {
+                Some((cpus, nodes)) if nodes.is_empty() => {
+                    format!(" [pool cpu {}]", crate::cpu::list(cpus))
+                }
+                Some((cpus, nodes)) => format!(
+                    " [pool cpu {} node {}]",
+                    crate::cpu::list(cpus),
+                    crate::cpu::list(nodes)
+                ),
+                None => String::new(),
+            };
+            // a machine with one node sets no policy, so a command
+            // sharing the pool there has nothing to add to "pool"
+            let shared = |cmd: &Cmd| match &whole {
+                Some((_, nodes)) if !nodes.is_empty() => format!(
+                    " [pool {}]",
+                    policy(cmd.memory.unwrap_or_default(), nodes, &cores.mems).describe()
+                ),
+                _ => " [pool]".to_string(),
+            };
+            println!("# {}{pool}", step.label());
 
             // cores really are taken and given back here, so the pinning shown
             // is one a run could produce. only as many are held at once as the
@@ -174,7 +239,7 @@ impl Pipeline<'_> {
                 if held.len() >= step.width() {
                     held.pop_front();
                 }
-                let lease = self.cores.try_acquire(cmd.cores.unwrap_or(0));
+                let lease = cores.try_acquire(cmd.cores.unwrap_or(0));
                 let cpus = lease.as_ref().map(|l| l.cpus()).unwrap_or_default();
                 let nodes = lease.as_ref().map(|l| l.nodes()).unwrap_or_default();
                 // the pinning is no longer part of the command, so it gets said
@@ -182,13 +247,14 @@ impl Pipeline<'_> {
                 let pin = match (cpus, nodes) {
                     // asked for cores the others in its step still hold
                     ([], _) if cmd.cores.unwrap_or(0) > 0 => " [waits for cores]".to_string(),
+                    ([], _) if whole.is_some() => shared(cmd),
                     ([], _) => String::new(),
                     (cpus, []) => format!(" [cpu {}]", crate::cpu::list(cpus)),
                     (cpus, nodes) => format!(
                         " [cpu {} node {} {}]",
                         crate::cpu::list(cpus),
                         crate::cpu::list(nodes),
-                        policy(cmd.memory.unwrap_or_default(), nodes, &self.cores.mems).describe()
+                        policy(cmd.memory.unwrap_or_default(), nodes, &cores.mems).describe()
                     ),
                 };
                 println!("{} {}{pin}", cmd.label(), cmd.line());
@@ -248,14 +314,23 @@ impl Pipeline<'_> {
         let mut remaining_steps = steps.iter_mut();
 
         for step in remaining_steps.by_ref() {
-            self.sinks.step_start(step)?;
-            match step.strategy() {
-                Some(Strategy::Serial) => self.serial(step)?,
-                Some(Strategy::Batched { jobs }) => self.batch(step, jobs)?,
-                None => self.closures(step)?,
+            // the step's own pool stands in for the pipeline's for
+            // as long as the step runs. nothing else is running, so
+            // every core the carve could want is free
+            let outer = step.pool.map(|size| {
+                let carved = self.cores.carve(size);
+                std::mem::replace(&mut self.cores, carved)
+            });
+            if let Some((cpus, nodes)) = self.cores.whole() {
+                step.pool_cpus = cpus;
+                step.pool_nodes = nodes;
             }
-            self.skip_rest(step)?;
-            self.sinks.step_done(step)?;
+
+            let ran = self.run_step(step);
+            if let Some(outer) = outer {
+                self.cores = outer;
+            }
+            ran?;
 
             if let Some(why) = step.aborts() {
                 self.sinks.abandoned(&why)?;
@@ -274,6 +349,18 @@ impl Pipeline<'_> {
         }
 
         Ok(failure)
+    }
+
+    /// One step, start to finish, with its sinks told either side.
+    fn run_step(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
+        self.sinks.step_start(step)?;
+        match step.strategy() {
+            Some(Strategy::Serial) => self.serial(step)?,
+            Some(Strategy::Batched { jobs }) => self.batch(step, jobs)?,
+            None => self.closures(step)?,
+        }
+        self.skip_rest(step)?;
+        self.sinks.step_done(step)
     }
 
     /// One command at a time, stopping early if the step says to.
@@ -302,6 +389,10 @@ impl Pipeline<'_> {
     /// here spawns another.
     fn closures(&mut self, step: &mut Step<'_>) -> anyhow::Result<()> {
         let start = Instant::now();
+
+        // this is the caller's own thread, so it gets its affinity
+        // back once the step is done
+        let _pinned = crate::cpu::pin_thread(&step.pool_cpus);
 
         for j in 0..step.closures().len() {
             // a closure takes no cores, so there is nothing for it to wait on
@@ -597,6 +688,48 @@ mod tests {
         assert_eq!(pipeline.steps[0].cmds()[1].memory, Some(Memory::Bound));
         // nothing said anywhere, which execute reads as the default
         assert_eq!(pipeline.steps[1].cmds()[0].memory, None);
+    }
+
+    #[test]
+    fn a_pool_has_to_fit_inside_what_it_is_carved_from() {
+        let machine = || Cores::with_layout(&[(0, 0), (1, 1), (2, 0), (3, 1)]);
+        let build = |builder: PipelineBuilder<'static>| builder.no_stderr().build_on(machine());
+
+        assert!(
+            build(PipelineBuilder::new().pool(5)).is_err(),
+            "more than the machine"
+        );
+        assert!(
+            build(PipelineBuilder::new().pool(0)).is_err(),
+            "an empty pool"
+        );
+
+        let step = || Step::serial([Cmd::new("/a")]);
+        assert!(build(PipelineBuilder::new().pool(2).step(step().pool(3))).is_err());
+        assert!(build(PipelineBuilder::new().pool(3).step(step().pool(3))).is_ok());
+
+        let greedy = Step::serial([Cmd::new("/a").cores(3)]).pool(2);
+        let Err(error) = build(PipelineBuilder::new().step(greedy)) else {
+            panic!("a command wider than its step's pool should not build");
+        };
+        assert!(
+            error.to_string().contains("its step's pool has 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn every_step_of_a_pooled_pipeline_is_pooled() {
+        let pipeline = PipelineBuilder::new()
+            .pool(2)
+            .step(Step::serial([Cmd::new("/a")]))
+            .step(Step::from_closures([Closure::new("c", || Ok(()))]))
+            .no_stderr()
+            .build_on(Cores::with_layout(&[(0, 0), (1, 1), (2, 0), (3, 1)]))
+            .unwrap();
+
+        assert!(pipeline.steps.iter().all(|step| step.pooled));
+        assert_eq!(pipeline.cores.whole().map(|w| w.0), Some(vec![0, 2]));
     }
 
     #[test]

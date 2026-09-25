@@ -127,6 +127,15 @@ impl<'a> Item<'a> {
         }
     }
 
+    /// Whether it ran across the whole of a pool it shared, rather than on cores
+    /// leased to it alone. Its [`cpus`](Item::cpus) are then the pool's.
+    pub fn pooled(self) -> bool {
+        match self {
+            Item::Cmd(cmd) => cmd.pooled,
+            Item::Closure(_) => false,
+        }
+    }
+
     /// Whether the machine this ran on has more than one memory node.
     pub fn numa(self) -> bool {
         match self {

@@ -81,7 +81,7 @@ impl Cores {
         // held until the command is finished with, however it finishes; the cpus
         // go back on the way out of scope
         let lease = self.acquire(cmd.cores.unwrap_or(0), &|| false);
-        settle(cmd, &lease, &self.mems);
+        settle(cmd, &lease, self);
 
         let status = match cmd.spawn() {
             Err(e) => Status::Failed(format!("{e:#}")),
@@ -175,7 +175,7 @@ impl<'a> Batch<'a> {
         if self.cancelled() {
             return;
         }
-        settle(cmd, &lease, &self.cores.mems);
+        settle(cmd, &lease, self.cores);
         started();
 
         let status = match cmd.spawn() {
@@ -247,17 +247,19 @@ impl<'a> Batch<'a> {
 }
 
 /// Write where a command landed onto it, and the memory policy that follows
-/// from that.
-fn settle(cmd: &mut Cmd, lease: &Option<Lease>, mems: &[usize]) {
-    cmd.cpus = lease
-        .as_ref()
-        .map(|l| l.cpus().to_vec())
-        .unwrap_or_default();
-    cmd.nodes = lease
-        .as_ref()
-        .map(|l| l.nodes().to_vec())
-        .unwrap_or_default();
-    cmd.policy = policy(cmd.memory.unwrap_or_default(), &cmd.nodes, mems);
+/// from that. One with no lease of its own, in a pool, gets the whole pool.
+fn settle(cmd: &mut Cmd, lease: &Option<Lease>, cores: &Cores) {
+    let (cpus, nodes) = match (lease, cores.whole()) {
+        (Some(lease), _) => (lease.cpus().to_vec(), lease.nodes().to_vec()),
+        (None, Some(whole)) if cmd.cores.unwrap_or(0) == 0 => {
+            cmd.pooled = true;
+            whole
+        }
+        (None, _) => (Vec::new(), Vec::new()),
+    };
+    cmd.cpus = cpus;
+    cmd.nodes = nodes;
+    cmd.policy = policy(cmd.memory.unwrap_or_default(), &cmd.nodes, &cores.mems);
 }
 
 /// The memory policy a placed command runs under.
@@ -643,6 +645,35 @@ fn secs(tv: libc::timeval) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_with_no_cores_in_a_pool_shares_all_of_it() {
+        let pool = Cores::with_layout(&[(0, 0), (1, 1), (2, 0), (3, 1)]).carve(2);
+
+        let mut shared = Cmd::new("/a");
+        settle(&mut shared, &None, &pool);
+        assert!(shared.pooled);
+        assert_eq!(
+            (shared.cpus.as_slice(), shared.nodes.as_slice()),
+            (&[0, 2][..], &[0][..])
+        );
+        assert_eq!(shared.policy, Policy::Preferred(0));
+
+        // one asking for cores leases them out of the pool instead
+        let mut own = Cmd::new("/b").cores(1);
+        let lease = pool.acquire(1, &|| false);
+        settle(&mut own, &lease, &pool);
+        assert!(!own.pooled);
+        assert_eq!(own.cpus, [0]);
+    }
+
+    #[test]
+    fn outside_a_pool_a_command_with_no_cores_is_not_pinned() {
+        let machine = Cores::with_layout(&[(0, 0), (1, 1)]);
+        let mut cmd = Cmd::new("/a");
+        settle(&mut cmd, &None, &machine);
+        assert!(!cmd.pooled && cmd.cpus.is_empty());
+    }
 
     #[test]
     fn a_machine_with_one_node_asks_for_no_policy() {

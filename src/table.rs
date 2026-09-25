@@ -210,11 +210,16 @@ impl Columns {
         let mut cpus = false;
         let mut nodes = false;
 
-        for item in steps.iter().flat_map(Step::items) {
-            keys.extend(item.fields().keys().cloned());
-            tags.extend(item.tags().iter().cloned());
-            cpus |= item.cores() > 0;
-            nodes |= item.cores() > 0 && item.numa();
+        for step in steps {
+            for item in step.items() {
+                // anything in a pool is pinned, whether or not it
+                // asked for cores of its own
+                let placed = item.cores() > 0 || step.pooled;
+                keys.extend(item.fields().keys().cloned());
+                tags.extend(item.tags().iter().cloned());
+                cpus |= placed;
+                nodes |= placed && item.numa();
+            }
         }
 
         Columns {
@@ -258,6 +263,13 @@ impl Columns {
         cells.insert(cells.len() - 1, Cell::left(text));
     }
 
+    /// Slots `text` in where the cpus cell goes.
+    fn put_cell(&self, cells: &mut Vec<Cell>, text: &str) {
+        if self.cpus {
+            cells.insert(cells.len() - 1, Cell::left(text));
+        }
+    }
+
     /// Slots the node cell in ahead of the cpus one, for the same reason and
     /// with the same guess at its width.
     fn put_nodes(&self, cells: &mut Vec<Cell>, nodes: Option<&[usize]>) {
@@ -293,7 +305,8 @@ impl Columns {
 
         // a step of one would just repeat itself, so it gets no line of its own
         // and keeps the first column instead, with its command filling in the rest
-        let first = if step.items().count() == 1 {
+        let alone = step.items().count() == 1;
+        let first = if alone {
             Cell::left(step.label())
         } else {
             rows.push(self.step_row(step));
@@ -304,7 +317,18 @@ impl Columns {
         };
 
         for item in step.items() {
-            rows.push(self.row(first.clone(), item));
+            // under a step line of its own, which names the pool,
+            // a command sharing it just says so. a closure is
+            // never placed itself, so one alone in its step shows
+            // the pool it ran pinned to
+            let pool = match item {
+                Item::Closure(_) if alone && step.pooled => {
+                    Pool::Named(&step.pool_cpus, &step.pool_nodes)
+                }
+                _ if !alone && item.pooled() => Pool::Shared,
+                _ => Pool::Own,
+            };
+            rows.push(self.row(first.clone(), item, pool));
         }
         rows
     }
@@ -424,11 +448,13 @@ impl Columns {
         }
 
         cells.extend(metrics.cells());
-        // the cpus a whole step held is not the cpus any one command held, so
-        // like exit and argv beside it, the step line leaves them alone
-        self.put_nodes(&mut cells, None);
+        // the cpus a whole step held are only the step's to report
+        // when it carved them as a pool. otherwise they are the
+        // commands', and the step line leaves them alone the way
+        // it does exit and argv
+        self.put_nodes(&mut cells, step.pooled.then_some(&step.pool_nodes[..]));
         self.put_policy(&mut cells, None);
-        self.put_cpus(&mut cells, None);
+        self.put_cpus(&mut cells, step.pooled.then_some(&step.pool_cpus[..]));
         cells
     }
 
@@ -436,7 +462,7 @@ impl Columns {
     /// and a right-aligned `|` or `||` otherwise.
     /// One item's line, whichever kind it is. The columns a closure has no
     /// answer for come back `None` from [`Item`] and print as `-`.
-    fn row(&self, first: Cell, item: Item<'_>) -> Vec<Cell> {
+    fn row(&self, first: Cell, item: Item<'_>, pool: Pool<'_>) -> Vec<Cell> {
         let mut cells = vec![first, Cell::left(item.label())];
         cells.extend(self.key_cells(item.fields(), item.tags()));
 
@@ -455,9 +481,16 @@ impl Columns {
             }
             .cells(),
         );
-        self.put_nodes(&mut cells, item.nodes());
+        let (cpus, nodes) = match pool {
+            Pool::Named(cpus, nodes) => (Some(cpus), Some(nodes)),
+            _ => (item.cpus(), item.nodes()),
+        };
+        self.put_nodes(&mut cells, nodes);
         self.put_policy(&mut cells, Some(item));
-        self.put_cpus(&mut cells, item.cpus());
+        match pool {
+            Pool::Shared => self.put_cell(&mut cells, "pool"),
+            _ => self.put_cpus(&mut cells, cpus),
+        }
         cells
     }
 
@@ -475,6 +508,17 @@ impl Columns {
         );
         cells
     }
+}
+
+/// What a row says about a pool its item ran in.
+#[derive(Clone, Copy)]
+enum Pool<'a> {
+    /// Nothing: its own cpus, or none.
+    Own,
+    /// It shares the pool its step line names.
+    Shared,
+    /// It ran pinned to these cpus and nodes, with no step line to name them.
+    Named(&'a [usize], &'a [usize]),
 }
 
 /// The status column. It answers one question — did this work — and leaves the
@@ -865,6 +909,37 @@ mod tests {
             lines[0]
         );
         assert!(lines[2][at..].contains(" prefer:1 "), "{}", lines[2]);
+    }
+
+    #[test]
+    fn a_pooled_step_names_its_pool_once_and_its_commands_say_pool() {
+        let mut step = Step::serial([cmd("/x", "a"), cmd("/y", "b")]).name("s");
+        step.pooled = true;
+        step.pool_cpus = vec![4, 6];
+        for cmd in step.cmds_mut() {
+            cmd.pooled = true;
+            cmd.cpus = vec![4, 6];
+        }
+        finish(&mut step, 1);
+        let text = write("pooled", Mode::default(), &[step]);
+        let lines: Vec<&str> = text.lines().collect();
+
+        let at = lines[0].find("cpus").expect("a cpus heading");
+        assert!(lines[2][at..].starts_with("4,6"), "{}", lines[2]);
+        assert!(lines[3][at..].starts_with("pool"), "{}", lines[3]);
+        assert!(lines[4][at..].starts_with("pool"), "{}", lines[4]);
+    }
+
+    #[test]
+    fn a_closure_alone_in_a_pooled_step_shows_the_pool() {
+        let mut step = Step::from_closures([Closure::new("c", || Ok(()))]).name("s");
+        step.pooled = true;
+        step.pool_cpus = vec![4, 6];
+        let text = write("pooled-closure", Mode::default(), &[step]);
+        let lines: Vec<&str> = text.lines().collect();
+
+        let at = lines[0].find("cpus").expect("a cpus heading");
+        assert!(lines[2][at..].starts_with("4,6"), "{}", lines[2]);
     }
 
     #[test]

@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it when they fill. A step's setting covers the commands under it, the way its
   core count does. `Preferred` can name only one node, so a command that took
   cores off two states no preference; `Bound` names every node it was given.
+- `PipelineBuilder::pool` and `Step::pool` carve a set of cores for the whole
+  run or for one step. A command in a pool that asks for no cores of its own
+  runs across all of the pool's cores, sharing them with the rest of the pool,
+  and the kernel's scheduler moves its threads to whichever of them is idle. A
+  command that asks for cores leases them out of the pool as before. A step's
+  pool comes out of the pipeline's if there is one, and closures run pinned to
+  the pool too. `build` fails for a pool larger than what it is carved from.
+  The table names a step's pool on the step's own line, each command sharing
+  it reads `pool` in the cpus column, and `dry_run` shows the same.
 - Before a command starts, michi checks its nodes against the ones the process
   may allocate from (`Mems_allowed` in `/proc/self/status`). A preference for a
   node outside them is left unset and the command runs anyway. A bind to one

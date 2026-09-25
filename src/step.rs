@@ -47,6 +47,18 @@ pub struct Step<'a> {
     pub(crate) on_error: OnError,
     pub(crate) elapsed_s: Option<f64>,
     pub(crate) items: Items<'a>,
+
+    /// How many cores to carve for this step alone, when it asked.
+    pub(crate) pool: Option<usize>,
+
+    /// Whether it runs in a pool, its own or the pipeline's. Settled when the
+    /// pipeline is built.
+    pub(crate) pooled: bool,
+
+    /// The cpus of that pool and the nodes they sit on, once the step has
+    /// started. Nodes are empty on a machine with one.
+    pub(crate) pool_cpus: Vec<usize>,
+    pub(crate) pool_nodes: Vec<usize>,
 }
 
 impl<'a> Step<'a> {
@@ -81,6 +93,10 @@ impl<'a> Step<'a> {
             on_error: OnError::default(),
             elapsed_s: None,
             items,
+            pool: None,
+            pooled: false,
+            pool_cpus: Vec::new(),
+            pool_nodes: Vec::new(),
         }
     }
 
@@ -94,6 +110,18 @@ impl<'a> Step<'a> {
         if let Items::Cmds { cores: c, .. } = &mut self.items {
             *c = Some(cores);
         }
+        self
+    }
+
+    /// Carve `cores` physical cores for this step as it starts, out of the
+    /// pipeline's pool if it has one, and give them back when it ends.
+    ///
+    /// A command here that asks for no cores of its own runs across the whole
+    /// pool, sharing it with the others, and the scheduler moves it wherever a
+    /// core is idle. One that asks for some leases them out of the pool as
+    /// usual. Closures are pinned to the pool too.
+    pub fn pool(mut self, cores: usize) -> Self {
+        self.pool = Some(cores);
         self
     }
 

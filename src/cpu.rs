@@ -58,6 +58,18 @@ pub(crate) struct Cores {
     /// The memory nodes this process may allocate from, or empty where that
     /// could not be read.
     pub(crate) mems: Vec<usize>,
+
+    /// Whether the cpus this process may run on cover more than one memory
+    /// node.
+    //
+    // read off the whole pool once and handed down to every
+    // carve: a pool carved onto one node of a two node machine
+    // still wants its node named and its policy set
+    pub(crate) numa: bool,
+
+    /// Whether this is a pool carved for a pipeline or a step, which a command
+    /// asking for no cores runs across whole.
+    pub(crate) pooled: bool,
 }
 
 /// Cores held for as long as one command needs them.
@@ -92,12 +104,15 @@ impl Cores {
             pool.push(cpu);
         }
 
+        let pool = locate(&pool, &nodes());
         Cores {
-            pool: locate(&pool, &nodes()),
+            numa: spans_nodes(&pool),
+            pool,
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
             placement: Placement::Pack,
             mems: mems(),
+            pooled: false,
         }
     }
 
@@ -113,19 +128,58 @@ impl Cores {
     /// one is not.
     #[cfg(test)]
     pub(crate) fn with_layout(layout: &[(usize, usize)]) -> Cores {
+        let pool: Vec<Cpu> = layout
+            .iter()
+            .map(|(id, node)| Cpu {
+                id: *id,
+                node: *node,
+            })
+            .collect();
         Cores {
-            pool: layout
-                .iter()
-                .map(|(id, node)| Cpu {
-                    id: *id,
-                    node: *node,
-                })
-                .collect(),
+            numa: spans_nodes(&pool),
+            pool,
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
             placement: Placement::Pack,
             mems: Vec::new(),
+            pooled: false,
         }
+    }
+
+    /// A pool of `size` of these cpus, chosen the way a command's would be.
+    ///
+    /// Nothing may be leased from this one while the carve is in use: a
+    /// pipeline carves before its run and a step as it starts, when nothing
+    /// else holds any.
+    pub(crate) fn carve(&self, size: usize) -> Cores {
+        let mut pool = place(&self.pool, size, self.placement);
+        pool.sort_unstable_by_key(|cpu| cpu.id);
+        Cores {
+            pool,
+            taken: Mutex::new(Vec::new()),
+            freed: Condvar::new(),
+            placement: self.placement,
+            mems: self.mems.clone(),
+            numa: self.numa,
+            pooled: true,
+        }
+    }
+
+    /// The cpus of a carved pool and the nodes they sit on, for a command that
+    /// shares it rather than leasing cores of its own. `None` for the machine's
+    /// own pool, whose commands asking for no cores are not pinned at all.
+    pub(crate) fn whole(&self) -> Option<(Vec<usize>, Vec<usize>)> {
+        if !self.pooled {
+            return None;
+        }
+        let cpus = self.pool.iter().map(|cpu| cpu.id).collect();
+        let mut nodes: Vec<usize> = match self.numa {
+            true => self.pool.iter().map(|cpu| cpu.node).collect(),
+            false => Vec::new(),
+        };
+        nodes.sort_unstable();
+        nodes.dedup();
+        Some((cpus, nodes))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -184,7 +238,7 @@ impl Cores {
         let mut cpus: Vec<usize> = placed.iter().map(|cpu| cpu.id).collect();
         cpus.sort_unstable();
 
-        let mut nodes: Vec<usize> = match self.spans_nodes() {
+        let mut nodes: Vec<usize> = match self.numa {
             true => placed.iter().map(|cpu| cpu.node).collect(),
             false => Vec::new(),
         };
@@ -197,13 +251,6 @@ impl Cores {
             cpus,
             nodes,
         })
-    }
-
-    /// Whether the pool covers more than one memory node.
-    pub(crate) fn spans_nodes(&self) -> bool {
-        let mut nodes = self.pool.iter().map(|cpu| cpu.node);
-        let first = nodes.next();
-        nodes.any(|node| Some(node) != first)
     }
 
     /// Wake anything waiting on cores that are never coming, so a stopping run
@@ -234,6 +281,13 @@ impl Drop for Lease<'_> {
     fn drop(&mut self) {
         self.cores.release(&self.cpus);
     }
+}
+
+/// Whether these cpus cover more than one memory node.
+fn spans_nodes(pool: &[Cpu]) -> bool {
+    let mut nodes = pool.iter().map(|cpu| cpu.node);
+    let first = nodes.next();
+    nodes.any(|node| Some(node) != first)
 }
 
 /// The `size` cpus to hand out, off one memory node wherever one of them has
@@ -344,6 +398,50 @@ fn mems() -> Vec<usize> {
 #[cfg(not(target_os = "linux"))]
 fn mems() -> Vec<usize> {
     Vec::new()
+}
+
+/// The calling thread's affinity, put back when this is dropped.
+pub(crate) struct Pinned {
+    #[cfg(target_os = "linux")]
+    was: libc::cpu_set_t,
+}
+
+/// Pin the calling thread to `cpus` until the guard is dropped. Nothing for an
+/// empty list, and nothing where the thread's affinity cannot be read or set.
+#[cfg(target_os = "linux")]
+pub(crate) fn pin_thread(cpus: &[usize]) -> Option<Pinned> {
+    if cpus.is_empty() {
+        return None;
+    }
+    let size = size_of::<libc::cpu_set_t>();
+    let mut was: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+
+    // SAFETY: both sets are cpu_set_t of the size passed, and pid 0 is the
+    // calling thread
+    unsafe {
+        if libc::sched_getaffinity(0, size, &mut was) != 0 {
+            return None;
+        }
+        if libc::sched_setaffinity(0, size, &mask(cpus)) != 0 {
+            return None;
+        }
+    }
+    Some(Pinned { was })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn pin_thread(_cpus: &[usize]) -> Option<Pinned> {
+    None
+}
+
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        // SAFETY: `was` came back from sched_getaffinity on this thread
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &self.was);
+        }
+    }
 }
 
 /// The affinity mask for `cpus`, built while there is still a whole program to
@@ -562,6 +660,46 @@ mod tests {
         // node 1's cpulist unread, so cpu 3 is nowhere
         let partial = locate(&[0, 1, 2, 3], &nodes);
         assert!(partial.iter().all(|c| c.node == 0));
+    }
+
+    #[test]
+    fn a_carved_pool_sits_on_one_node_and_still_names_it() {
+        let machine = Cores::with_layout(&[(0, 0), (1, 1), (2, 0), (3, 1), (4, 0), (5, 1)]);
+        assert!(machine.whole().is_none(), "the machine is not a pool");
+
+        let pool = machine.carve(2);
+        assert_eq!(pool.whole(), Some((vec![0, 2], vec![0])));
+
+        // one node's worth of cpus, on a machine with two: a lease
+        // out of it still says where it is
+        let lease = pool.acquire(1, &|| false).expect("one of two");
+        assert_eq!(lease.nodes(), [0]);
+    }
+
+    #[test]
+    fn a_pool_carved_from_a_pool_stays_inside_it() {
+        let machine = Cores::with_layout(&[(0, 0), (1, 1), (2, 0), (3, 1), (4, 0), (5, 1)]);
+        let outer = machine.carve(4);
+        let inner = outer.carve(3);
+
+        let (cpus, nodes) = inner.whole().unwrap();
+        assert_eq!(cpus.len(), 3);
+        let (outside, _) = outer.whole().unwrap();
+        assert!(cpus.iter().all(|cpu| outside.contains(cpu)), "{cpus:?}");
+        // the outer pool took node 0's three and one of node 1's,
+        // so node 0 alone holds the inner one
+        assert_eq!(nodes, [0]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_pinned_thread_gets_its_affinity_back() {
+        let before = allowed();
+        {
+            let _pinned = pin_thread(&before[..1]).expect("pin to one allowed cpu");
+            assert_eq!(allowed(), before[..1]);
+        }
+        assert_eq!(allowed(), before);
     }
 
     #[test]

@@ -154,6 +154,10 @@ pub struct Cmd {
     // and the table has to settle its columns before the run
     // when no command has landed anywhere yet
     pub(crate) numa: bool,
+
+    /// Whether its cpus are the whole of a pool it shares, rather than cores
+    /// leased to it alone.
+    pub(crate) pooled: bool,
     /// The program's own level, then one per subcommand.
     //
     // never empty: new pushes the program's level
@@ -179,6 +183,7 @@ impl Cmd {
             memory: None,
             policy: Policy::Default,
             numa: false,
+            pooled: false,
             levels: vec![Level::new(None)],
             env: BTreeMap::new(),
             dir: None,
