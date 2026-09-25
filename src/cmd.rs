@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::execute::Status;
+use crate::execute::{Policy, Status};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Output {
@@ -144,6 +144,9 @@ pub struct Cmd {
     /// or [`Pipeline`](crate::Pipeline) settles it.
     pub(crate) memory: Option<Memory>,
 
+    /// The memory policy it was given once placed.
+    pub(crate) policy: Policy,
+
     /// Whether the machine has more than one memory node.
     //
     // a fact about the machine rather than the command, kept
@@ -174,6 +177,7 @@ impl Cmd {
             cpus: Vec::new(),
             nodes: Vec::new(),
             memory: None,
+            policy: Policy::Default,
             numa: false,
             levels: vec![Level::new(None)],
             env: BTreeMap::new(),

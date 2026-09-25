@@ -339,7 +339,12 @@ impl Sink for Progress {
             state.emit(&title);
         }
 
-        let line = state.line(&name, item.status(), item.nodes().unwrap_or_default());
+        let line = state.line(
+            &name,
+            item.status(),
+            item.nodes().unwrap_or_default(),
+            item.policy_note(),
+        );
         state.emit(&line);
 
         // only if it is still there — a failure that said nothing has had its
@@ -593,7 +598,7 @@ impl State {
     }
 
     /// One finished thing, how it went, and which memory node it went there on.
-    fn line(&self, name: &str, status: &Status, nodes: &[usize]) -> String {
+    fn line(&self, name: &str, status: &Status, nodes: &[usize], note: Option<&str>) -> String {
         let mark = self.marks.of(status);
 
         let verdict = match status {
@@ -611,9 +616,13 @@ impl State {
 
         // a machine with one node hands out no nodes at all, so
         // this is empty there and the line reads as it always has
-        let placed = match nodes {
-            [] => String::new(),
-            nodes => format!("node {}", crate::cpu::list(nodes)),
+        let placed = match (nodes, note) {
+            ([], _) => String::new(),
+            (nodes, None) => format!("node {}", crate::cpu::list(nodes)),
+            (nodes, Some(note)) => format!(
+                "node {} (no memory preference: {note})",
+                crate::cpu::list(nodes)
+            ),
         };
 
         let detail = match (status, status.timing()) {

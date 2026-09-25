@@ -12,7 +12,7 @@ use std::sync::{Condvar, Mutex};
 use std::thread::Scope;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 
 use crate::closure::Closure;
 use crate::cmd::{Cmd, Memory, Output};
@@ -81,8 +81,7 @@ impl Cores {
         // held until the command is finished with, however it finishes; the cpus
         // go back on the way out of scope
         let lease = self.acquire(cmd.cores.unwrap_or(0), &|| false);
-        cmd.cpus = pinned(&lease);
-        cmd.nodes = nodes(&lease);
+        settle(cmd, &lease, &self.mems);
 
         let status = match cmd.spawn() {
             Err(e) => Status::Failed(format!("{e:#}")),
@@ -176,8 +175,7 @@ impl<'a> Batch<'a> {
         if self.cancelled() {
             return;
         }
-        cmd.cpus = pinned(&lease);
-        cmd.nodes = nodes(&lease);
+        settle(cmd, &lease, &self.cores.mems);
         started();
 
         let status = match cmd.spawn() {
@@ -248,40 +246,83 @@ impl<'a> Batch<'a> {
     }
 }
 
-fn pinned(lease: &Option<Lease>) -> Vec<usize> {
-    match lease {
-        Some(lease) => lease.cpus().to_vec(),
-        None => Vec::new(),
-    }
+/// Write where a command landed onto it, and the memory policy that follows
+/// from that.
+fn settle(cmd: &mut Cmd, lease: &Option<Lease>, mems: &[usize]) {
+    cmd.cpus = lease
+        .as_ref()
+        .map(|l| l.cpus().to_vec())
+        .unwrap_or_default();
+    cmd.nodes = lease
+        .as_ref()
+        .map(|l| l.nodes().to_vec())
+        .unwrap_or_default();
+    cmd.policy = policy(cmd.memory.unwrap_or_default(), &cmd.nodes, mems);
 }
 
-fn nodes(lease: &Option<Lease>) -> Vec<usize> {
-    match lease {
-        Some(lease) => lease.nodes().to_vec(),
-        None => Vec::new(),
-    }
+/// The memory policy a placed command runs under.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Policy {
+    /// Nothing asked of the kernel, which leaves each page on the node of the
+    /// thread that first touched it.
+    #[default]
+    Default,
+    Preferred(usize),
+    Bound(Vec<usize>),
+
+    /// A preference left unset because its node is outside the process's
+    /// allowed mems, and why.
+    Dropped(String),
+
+    /// A bind refused for the same reason. The command is not run.
+    Refused(String),
 }
 
-/// The memory policy to install in the child, the way `set_mempolicy` takes it:
-/// a mode, a node mask, and how many bits of the mask to read.
+/// The memory policy for a command placed on `nodes`, given the nodes the
+/// process may allocate from. An empty `mems` is one that could not be read,
+/// and allows every node.
 ///
-/// `None` wherever there is nothing to say. A machine with one node hands out
-/// no nodes at all, first touch is the kernel's own behaviour and needs no
-/// call, and `MPOL_PREFERRED` names a single node, so a command preferring one
-/// after it had to take cores off two has no way to say which.
+/// A machine with one node hands out no nodes at all, first touch is the
+/// kernel's own behaviour and needs no call, and `MPOL_PREFERRED` names a
+/// single node, so a command preferring one after it had to take cores off two
+/// has no way to say which.
+fn policy(memory: Memory, nodes: &[usize], mems: &[usize]) -> Policy {
+    let allowed = |node: &usize| mems.is_empty() || mems.contains(node);
+
+    match (memory, nodes) {
+        (_, []) | (Memory::FirstTouch, _) => Policy::Default,
+        (Memory::Preferred, [node]) if allowed(node) => Policy::Preferred(*node),
+        (Memory::Preferred, [node]) => Policy::Dropped(format!("node {node} not in Mems_allowed")),
+        (Memory::Preferred, _) => Policy::Default,
+        (Memory::Bound, nodes) => {
+            let outside: Vec<usize> = nodes.iter().copied().filter(|n| !allowed(n)).collect();
+            match outside.as_slice() {
+                // bind takes a mask rather than one node, so a
+                // command that had to span two is still held to
+                // exactly those
+                [] => Policy::Bound(nodes.to_vec()),
+                outside => Policy::Refused(format!(
+                    "cannot bind to node {}: not in Mems_allowed {}",
+                    crate::cpu::list(outside),
+                    crate::cpu::list(mems)
+                )),
+            }
+        }
+    }
+}
+
+/// The `set_mempolicy` call for `policy`: a mode, a node mask, and the
+/// `maxnode` to pass with it.
 #[cfg(target_os = "linux")]
-fn policy(memory: Memory, nodes: &[usize]) -> Option<(libc::c_int, Vec<libc::c_ulong>, usize)> {
-    let (mode, nodes) = match (memory, nodes) {
-        (_, []) | (Memory::FirstTouch, _) => return None,
-        (Memory::Preferred, [node]) => (MPOL_PREFERRED, &[*node][..]),
-        (Memory::Preferred, _) => return None,
-        // bind takes a mask rather than one node, so a command
-        // that had to span two is still held to exactly those
-        (Memory::Bound, nodes) => (MPOL_BIND, nodes),
+fn call(policy: &Policy) -> Option<(libc::c_int, Vec<libc::c_ulong>, usize)> {
+    let (mode, nodes) = match policy {
+        Policy::Preferred(node) => (MPOL_PREFERRED, std::slice::from_ref(node)),
+        Policy::Bound(nodes) => (MPOL_BIND, nodes.as_slice()),
+        Policy::Default | Policy::Dropped(_) | Policy::Refused(_) => return None,
     };
 
-    let (mask, bits) = crate::cpu::nodemask(nodes);
-    Some((mode, mask, bits))
+    let (mask, maxnode) = crate::cpu::nodemask(nodes);
+    Some((mode, mask, maxnode))
 }
 
 fn outcome(waited: anyhow::Result<(Timing, bool)>) -> Status {
@@ -345,7 +386,10 @@ impl Cmd {
         if !self.cpus.is_empty() {
             let set = crate::cpu::mask(&self.cpus);
 
-            let policy = policy(self.memory.unwrap_or_default(), &self.nodes);
+            if let Policy::Refused(why) = &self.policy {
+                bail!("{why}");
+            }
+            let policy = call(&self.policy);
 
             unsafe {
                 proc.pre_exec(move || {
@@ -358,7 +402,12 @@ impl Cmd {
                         // calls, so this is the raw syscall
                         let rc =
                             libc::syscall(libc::SYS_set_mempolicy, *mode, mask.as_ptr(), *bits);
-                        if rc != 0 {
+
+                        // a preference is advice, so one the kernel
+                        // turns down still runs. nothing can report it
+                        // from here, which is why the parent checks
+                        // the allowed mems before the fork
+                        if rc != 0 && *mode == MPOL_BIND {
                             return Err(std::io::Error::last_os_error());
                         }
                     }
@@ -573,44 +622,69 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn a_machine_with_one_node_asks_for_no_policy() {
         // an empty node list is what a single node pool hands out
         for memory in [Memory::Preferred, Memory::Bound, Memory::FirstTouch] {
-            assert!(policy(memory, &[]).is_none(), "{memory:?} on one node");
+            assert_eq!(policy(memory, &[], &[]), Policy::Default, "{memory:?}");
         }
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn first_touch_asks_for_no_policy_wherever_it_landed() {
-        assert!(policy(Memory::FirstTouch, &[1]).is_none());
-        assert!(policy(Memory::FirstTouch, &[0, 1]).is_none());
+        assert_eq!(policy(Memory::FirstTouch, &[1], &[]), Policy::Default);
+        assert_eq!(policy(Memory::FirstTouch, &[0, 1], &[]), Policy::Default);
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn preferred_names_the_one_node_it_can_name() {
         assert_eq!(
-            policy(Memory::Preferred, &[1]),
-            Some((MPOL_PREFERRED, vec![0b10], 3))
+            policy(Memory::Preferred, &[1], &[0, 1]),
+            Policy::Preferred(1)
         );
         // MPOL_PREFERRED has no way to say "either of these two",
         // so a command that had to span says nothing at all
-        assert!(policy(Memory::Preferred, &[0, 1]).is_none());
+        assert_eq!(policy(Memory::Preferred, &[0, 1], &[0, 1]), Policy::Default);
+    }
+
+    #[test]
+    fn bound_holds_a_command_to_every_node_it_took_cores_from() {
+        assert_eq!(policy(Memory::Bound, &[1], &[0, 1]), Policy::Bound(vec![1]));
+        assert_eq!(
+            policy(Memory::Bound, &[0, 1], &[0, 1]),
+            Policy::Bound(vec![0, 1])
+        );
+    }
+
+    #[test]
+    fn a_node_outside_the_allowed_mems_drops_a_preference_and_refuses_a_bind() {
+        assert_eq!(
+            policy(Memory::Preferred, &[1], &[0]),
+            Policy::Dropped("node 1 not in Mems_allowed".into())
+        );
+        assert_eq!(
+            policy(Memory::Bound, &[0, 1], &[0]),
+            Policy::Refused("cannot bind to node 1: not in Mems_allowed 0".into())
+        );
+    }
+
+    #[test]
+    fn unreadable_mems_allow_every_node() {
+        assert_eq!(policy(Memory::Preferred, &[1], &[]), Policy::Preferred(1));
+        assert_eq!(policy(Memory::Bound, &[1], &[]), Policy::Bound(vec![1]));
     }
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn bound_holds_a_command_to_every_node_it_took_cores_from() {
+    fn a_policy_becomes_a_mode_a_mask_and_a_maxnode() {
         assert_eq!(
-            policy(Memory::Bound, &[1]),
-            Some((MPOL_BIND, vec![0b10], 3))
+            call(&Policy::Preferred(1)),
+            Some((MPOL_PREFERRED, vec![0b10], 3))
         );
         assert_eq!(
-            policy(Memory::Bound, &[0, 1]),
+            call(&Policy::Bound(vec![0, 1])),
             Some((MPOL_BIND, vec![0b11], 3))
         );
+        assert_eq!(call(&Policy::Dropped("x".into())), None);
     }
 
     #[test]

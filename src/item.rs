@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::closure::Closure;
 use crate::cmd::Cmd;
-use crate::execute::Status;
+use crate::execute::{Policy, Status};
 
 /// A command or a closure, whichever a step happens to hold.
 ///
@@ -100,6 +100,35 @@ impl<'a> Item<'a> {
         match self {
             Item::Cmd(cmd) => Some(&cmd.nodes),
             Item::Closure(_) => None,
+        }
+    }
+
+    /// The memory policy it ran under: `prefer:1`, `bind:0,1` or `default`.
+    /// `None` for a closure, for a command never placed on a node, and for one
+    /// refused its bind.
+    pub fn policy(self) -> Option<String> {
+        let Item::Cmd(cmd) = self else {
+            return None;
+        };
+        if cmd.nodes.is_empty() {
+            return None;
+        }
+        match &cmd.policy {
+            Policy::Preferred(node) => Some(format!("prefer:{node}")),
+            Policy::Bound(nodes) => Some(format!("bind:{}", crate::cpu::list(nodes))),
+            Policy::Default | Policy::Dropped(_) => Some("default".into()),
+            Policy::Refused(_) => None,
+        }
+    }
+
+    /// Why it ran without the memory preference it asked for, if it did.
+    pub fn policy_note(self) -> Option<&'a str> {
+        match self {
+            Item::Cmd(Cmd {
+                policy: Policy::Dropped(why),
+                ..
+            }) => Some(why),
+            _ => None,
         }
     }
 

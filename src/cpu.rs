@@ -21,6 +21,22 @@ struct Cpu {
     node: usize,
 }
 
+/// Which node a command's cores come off, when more than one could hold them.
+///
+/// A machine with more than one memory node has no default: a pipeline placing
+/// commands on one has to choose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// The node with the fewest free cores that still fits, keeping the others
+    /// whole for a wider request. Concurrent commands share a node's cache and
+    /// memory bandwidth.
+    Pack,
+
+    /// The node with the most free cores, so concurrent commands land on
+    /// separate nodes until there are more of them than nodes.
+    Spread,
+}
+
 /// The cores a pipeline has to hand out, and which of them are in use.
 ///
 /// The pool holds one logical CPU per physical core. Two logical CPUs on one
@@ -37,6 +53,15 @@ pub(crate) struct Cores {
     /// spinning, which would burn a core to wait for a core.
     taken: Mutex<Vec<usize>>,
     freed: Condvar,
+
+    /// Which node a request comes off when more than one could hold it. `None`
+    /// is only ever left on a pool the pipeline has not asked to place across
+    /// nodes, where it packs.
+    pub(crate) placement: Option<Placement>,
+
+    /// The memory nodes this process may allocate from, or empty where that
+    /// could not be read.
+    pub(crate) mems: Vec<usize>,
 }
 
 /// Cores held for as long as one command needs them.
@@ -80,6 +105,8 @@ impl Cores {
             pool,
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
+            placement: None,
+            mems: mems(),
         }
     }
 
@@ -105,6 +132,8 @@ impl Cores {
                 .collect(),
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
+            placement: None,
+            mems: Vec::new(),
         }
     }
 
@@ -156,7 +185,7 @@ impl Cores {
             return None;
         }
 
-        let placed = place(&free, size);
+        let placed = place(&free, size, self.placement.unwrap_or(Placement::Pack));
 
         // lowest first, so a run with the machine to itself
         // places its commands the same way every time and the
@@ -223,10 +252,13 @@ impl Drop for Lease<'_> {
 /// is worth choosing but not worth queueing for, so this takes the best
 /// arrangement free at the moment the request can be met, and never holds a
 /// command back waiting for a better one.
-fn place(free: &[Cpu], size: usize) -> Vec<Cpu> {
-    // the smallest node that still fits, so a narrow request
-    // leaves the wide nodes whole for a wide one
-    for node in nodewise(free) {
+fn place(free: &[Cpu], size: usize, placement: Placement) -> Vec<Cpu> {
+    let mut nodes = nodewise(free);
+    if placement == Placement::Spread {
+        nodes.sort_by_key(|node| (std::cmp::Reverse(node.len()), node[0].id));
+    }
+
+    for node in nodes {
         if node.len() >= size {
             return node[..size].to_vec();
         }
@@ -286,6 +318,24 @@ fn nodes() -> BTreeMap<usize, usize> {
     }
 
     out
+}
+
+/// The memory nodes this process may allocate from, as its cpuset allows them.
+#[cfg(target_os = "linux")]
+fn mems() -> Vec<usize> {
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return Vec::new();
+    };
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Mems_allowed_list:"))
+        .map(parse_list)
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mems() -> Vec<usize> {
+    Vec::new()
 }
 
 /// The affinity mask for `cpus`, built while there is still a whole program to
@@ -465,6 +515,20 @@ mod tests {
             .expect("the other node, still whole");
         assert_eq!(wide.cpus(), [4, 6, 8, 10]);
         assert_eq!(wide.nodes(), [1]);
+    }
+
+    #[test]
+    fn spreading_takes_the_node_with_the_most_free() {
+        let mut cores = Cores::with_layout(&[(0, 0), (2, 0), (4, 0), (6, 1), (8, 1), (10, 1)]);
+        cores.placement = Some(Placement::Spread);
+
+        let first = cores.acquire(2, &|| false).expect("a pair");
+        assert_eq!(first.nodes(), [0]);
+
+        // packing would put this beside the first, on the one
+        // core node 0 has left
+        let second = cores.acquire(1, &|| false).expect("one more");
+        assert_eq!(second.nodes(), [1]);
     }
 
     #[test]

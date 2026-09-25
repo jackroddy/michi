@@ -9,7 +9,7 @@ use std::time::Instant;
 use anyhow::{Context, anyhow, bail};
 
 use crate::cmd::{Cmd, Output};
-use crate::cpu::Cores;
+use crate::cpu::{Cores, Placement};
 use crate::execute::{Batch, Status, stamp};
 use crate::item::Item;
 use crate::label;
@@ -24,6 +24,7 @@ pub struct PipelineBuilder<'a> {
     steps: Vec<Step<'a>>,
     sinks: Sinks,
     stderr_dir: Option<PathBuf>,
+    placement: Option<Placement>,
 }
 
 impl Default for PipelineBuilder<'_> {
@@ -32,6 +33,7 @@ impl Default for PipelineBuilder<'_> {
             steps: Vec::new(),
             sinks: Sinks::default(),
             stderr_dir: Some(PathBuf::from(STDERR_DIR)),
+            placement: None,
         }
     }
 }
@@ -61,16 +63,29 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
+    /// Which node a command's cores come off when more than one could hold
+    /// them. Required on a machine with more than one memory node, for a
+    /// pipeline where any command asks for cores.
+    pub fn placement(mut self, placement: Placement) -> Self {
+        self.placement = Some(placement);
+        self
+    }
+
     pub fn build(self) -> anyhow::Result<Pipeline<'a>> {
+        self.build_on(Cores::read())
+    }
+
+    fn build_on(self, mut cores: Cores) -> anyhow::Result<Pipeline<'a>> {
         let PipelineBuilder {
             mut steps,
             sinks,
             stderr_dir,
+            placement,
         } = self;
 
         let maybe_dir = stderr_dir.map(|dir| dir.join(stamp()));
         let mut stderr_wanted = false;
-        let cores = Cores::read();
+        cores.placement = placement;
 
         for (s, step) in steps.iter_mut().enumerate() {
             let s_idx = s + 1;
@@ -124,6 +139,13 @@ impl<'a> PipelineBuilder<'a> {
                         "{step_label}.{} wants {want} cores, and the machine has {}",
                         cmd.label(),
                         cores.len()
+                    );
+                }
+                if want > 0 && placement.is_none() && cores.spans_nodes() {
+                    bail!(
+                        "{step_label}.{} wants cores on a machine with more than one \
+                         memory node, and PipelineBuilder::placement was not set",
+                        cmd.label()
                     );
                 }
             }
@@ -534,6 +556,7 @@ mod tests {
         let pipeline = PipelineBuilder::new()
             .step(Step::serial([Cmd::new("/a"), Cmd::new("/b").cores(2)]).cores(4))
             .step(Step::serial([Cmd::new("/c")]))
+            .placement(Placement::Pack)
             .no_stderr()
             .build()
             .unwrap();
@@ -541,6 +564,36 @@ mod tests {
         assert_eq!(pipeline.steps[0].cmds()[0].cores, Some(4));
         assert_eq!(pipeline.steps[0].cmds()[1].cores, Some(2));
         assert_eq!(pipeline.steps[1].cmds()[0].cores, None);
+    }
+
+    #[test]
+    fn two_nodes_need_a_placement_before_anything_asks_for_cores() {
+        let two = || Cores::with_layout(&[(0, 0), (1, 1)]);
+        let pinned = || Step::serial([Cmd::new("/a").cores(1)]);
+
+        let unset = PipelineBuilder::new().step(pinned()).no_stderr();
+        assert!(unset.build_on(two()).is_err());
+
+        let set = PipelineBuilder::new()
+            .step(pinned())
+            .placement(Placement::Spread)
+            .no_stderr();
+        assert!(set.build_on(two()).is_ok());
+
+        // nothing placed, nothing to choose
+        let unpinned = PipelineBuilder::new()
+            .step(Step::serial([Cmd::new("/a")]))
+            .no_stderr();
+        assert!(unpinned.build_on(two()).is_ok());
+    }
+
+    #[test]
+    fn one_node_needs_no_placement() {
+        let pipeline = PipelineBuilder::new()
+            .step(Step::serial([Cmd::new("/a").cores(1)]))
+            .no_stderr()
+            .build_on(Cores::with_pool(vec![0, 2]));
+        assert!(pipeline.is_ok());
     }
 
     #[test]
@@ -804,6 +857,7 @@ mod tests {
                 )
                 .on_error(OnError::Skip),
             )
+            .placement(Placement::Pack)
             .no_stderr()
             .sink(recorder)
             .build()

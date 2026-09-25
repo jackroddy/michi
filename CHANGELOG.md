@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has free crosses as few of them as its size forces. Placement only ever
   chooses among the cpus free at that moment, so nothing waits longer than it
   did before.
+- On a machine with more than one memory node, `build` fails for a pipeline
+  whose commands ask for cores unless `PipelineBuilder::placement` is set,
+  taking a `Placement`. `Pack` puts a command on the node with the fewest free
+  cores that still fits, keeping the others whole for a wider request. `Spread`
+  puts it on the node with the most free cores, so concurrent commands land on
+  separate nodes until there are more of them than nodes. On a machine with one
+  node the setting is optional and changes nothing.
 - A command placed on one node asks the kernel for its pages there. It spills
   onto another node when that one fills, so a command needing more memory than
   its node has runs slowly rather than dying.
@@ -26,15 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it when they fill. A step's setting covers the commands under it, the way its
   core count does. `Preferred` can name only one node, so a command that took
   cores off two states no preference; `Bound` names every node it was given.
+- Before a command starts, michi checks its nodes against the ones the process
+  may allocate from (`Mems_allowed` in `/proc/self/status`). A preference for a
+  node outside them is left unset and the command runs anyway. A bind to one
+  fails the command without starting it. A preference the kernel turns down
+  at exec is skipped too, and the command runs without it.
 - `dry_run` and the table say which node a command landed on. A machine with one
   node has nothing to say there, so it gets no node column and no node in the
-  `dry_run` line.
-- `Item::nodes()` and `Item::numa()`, so a sink of your own can report placement
-  the way the built-in table does.
+  `dry_run` line. Beside the node column, a `policy` column holds the memory
+  policy each command ran under (`prefer:1`, `bind:0,1` or `default`), with the
+  reason when a preference was left unset.
+- `Item::nodes()`, `Item::numa()`, `Item::policy()` and `Item::policy_note()`,
+  so a sink of your own can report placement the way the built-in table does.
 - `Progress` names the node beside the time and memory on a finished line. It
   says nothing while a command is still running, because a batch hands its
   placement back only once the command is done, and nothing at all on a machine
-  with one node.
+  with one node. When a command's memory preference was left unset, the line
+  says why.
 
 ### Changed
 
