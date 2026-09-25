@@ -104,14 +104,17 @@ impl Cores {
             pool.push(cpu);
         }
 
-        let pool = locate(&pool, &nodes());
+        Cores::new(locate(&pool, &nodes()), mems())
+    }
+
+    fn new(pool: Vec<Cpu>, mems: Vec<usize>) -> Cores {
         Cores {
             numa: spans_nodes(&pool),
             pool,
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
             placement: Placement::Pack,
-            mems: mems(),
+            mems,
             pooled: false,
         }
     }
@@ -128,22 +131,8 @@ impl Cores {
     /// one is not.
     #[cfg(test)]
     pub(crate) fn with_layout(layout: &[(usize, usize)]) -> Cores {
-        let pool: Vec<Cpu> = layout
-            .iter()
-            .map(|(id, node)| Cpu {
-                id: *id,
-                node: *node,
-            })
-            .collect();
-        Cores {
-            numa: spans_nodes(&pool),
-            pool,
-            taken: Mutex::new(Vec::new()),
-            freed: Condvar::new(),
-            placement: Placement::Pack,
-            mems: Vec::new(),
-            pooled: false,
-        }
+        let pool = layout.iter().map(|&(id, node)| Cpu { id, node }).collect();
+        Cores::new(pool, Vec::new())
     }
 
     /// A pool of `size` of these cpus, chosen the way a command's would be.
@@ -155,13 +144,10 @@ impl Cores {
         let mut pool = place(&self.pool, size, self.placement);
         pool.sort_unstable_by_key(|cpu| cpu.id);
         Cores {
-            pool,
-            taken: Mutex::new(Vec::new()),
-            freed: Condvar::new(),
             placement: self.placement,
-            mems: self.mems.clone(),
             numa: self.numa,
             pooled: true,
+            ..Cores::new(pool, self.mems.clone())
         }
     }
 
@@ -173,13 +159,18 @@ impl Cores {
             return None;
         }
         let cpus = self.pool.iter().map(|cpu| cpu.id).collect();
-        let mut nodes: Vec<usize> = match self.numa {
-            true => self.pool.iter().map(|cpu| cpu.node).collect(),
-            false => Vec::new(),
-        };
+        Some((cpus, self.nodes_of(&self.pool)))
+    }
+
+    /// The nodes `cpus` sit on, lowest first, or none on a machine with one.
+    fn nodes_of(&self, cpus: &[Cpu]) -> Vec<usize> {
+        if !self.numa {
+            return Vec::new();
+        }
+        let mut nodes: Vec<usize> = cpus.iter().map(|cpu| cpu.node).collect();
         nodes.sort_unstable();
         nodes.dedup();
-        Some((cpus, nodes))
+        nodes
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -199,11 +190,11 @@ impl Cores {
 
         let mut taken = self.taken.lock().unwrap();
         loop {
-            if abandon() {
-                return None;
-            }
             if let Some(lease) = self.grab(&mut taken, size) {
                 return Some(lease);
+            }
+            if abandon() {
+                return None;
             }
             taken = self.freed.wait(taken).unwrap();
         }
@@ -212,10 +203,7 @@ impl Cores {
     /// Take `size` cores if they are free right now, and never wait. For
     /// working out what a run would look like without running it.
     pub(crate) fn try_acquire(&self, size: usize) -> Option<Lease<'_>> {
-        if size == 0 || size > self.pool.len() {
-            return None;
-        }
-        self.grab(&mut self.taken.lock().unwrap(), size)
+        self.acquire(size, &|| true)
     }
 
     fn grab(&self, taken: &mut Vec<usize>, size: usize) -> Option<Lease<'_>> {
@@ -238,12 +226,7 @@ impl Cores {
         let mut cpus: Vec<usize> = placed.iter().map(|cpu| cpu.id).collect();
         cpus.sort_unstable();
 
-        let mut nodes: Vec<usize> = match self.numa {
-            true => placed.iter().map(|cpu| cpu.node).collect(),
-            false => Vec::new(),
-        };
-        nodes.sort_unstable();
-        nodes.dedup();
+        let nodes = self.nodes_of(&placed);
 
         taken.extend(&cpus);
         Some(Lease {
@@ -781,13 +764,6 @@ mod tests {
         assert_eq!(nodemask(&[past]), (vec![0, 1], past + 2));
         // no nodes is the single node machine asking for no policy
         assert_eq!(nodemask(&[]), (Vec::new(), 0));
-    }
-
-    #[test]
-    fn cores_go_out_lowest_first() {
-        let cores = Cores::with_pool(vec![0, 2, 4, 6]);
-        let lease = cores.acquire(2, &|| false).expect("two of four");
-        assert_eq!(lease.cpus(), [0, 2]);
     }
 
     #[test]

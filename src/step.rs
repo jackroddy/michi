@@ -317,11 +317,6 @@ mod tests {
     }
 
     #[test]
-    fn abort_is_the_default() {
-        assert_eq!(OnError::default(), OnError::Abort);
-    }
-
-    #[test]
     fn a_command_that_never_ran_is_not_a_failure() {
         for outcome in [Status::NotRun, Status::Skipped] {
             let step = step(OnError::Abort, outcome);

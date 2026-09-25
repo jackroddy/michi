@@ -53,23 +53,17 @@ value_via_display!(
     std::fmt::Arguments<'_>,
 );
 
-impl Value for &Path {
-    fn render(self) -> String {
-        self.display().to_string()
-    }
+macro_rules! value_via_path {
+    ($($t:ty),*) => {
+        $(impl Value for $t {
+            fn render(self) -> String {
+                self.display().to_string()
+            }
+        })*
+    };
 }
 
-impl Value for PathBuf {
-    fn render(self) -> String {
-        self.display().to_string()
-    }
-}
-
-impl Value for &PathBuf {
-    fn render(self) -> String {
-        self.display().to_string()
-    }
-}
+value_via_path!(&Path, PathBuf, &PathBuf);
 
 /// An option: a flag on its own, or a flag with a value after it.
 #[derive(Clone, Debug)]
@@ -341,14 +335,7 @@ impl Cmd {
 
     /// Everything after the program, in the order it gets handed to the shell.
     pub(crate) fn args(&self) -> Vec<String> {
-        let size = self
-            .levels
-            .iter()
-            .map(|level| {
-                usize::from(level.sub.is_some()) + level.opts.len() + level.positionals.len()
-            })
-            .sum();
-        let mut out = Vec::with_capacity(size);
+        let mut out = Vec::new();
 
         for level in &self.levels {
             out.extend(level.sub.iter().cloned());
@@ -364,11 +351,6 @@ impl Cmd {
         }
 
         out
-    }
-
-    /// The program and everything after it, as they get handed to exec.
-    pub(crate) fn argv(&self) -> (PathBuf, Vec<String>) {
-        (self.program.clone(), self.args())
     }
 
     /// The command as a shell line.
@@ -388,9 +370,8 @@ impl Cmd {
             .map(|(key, value)| format!("{key}={}", quote(value)))
             .collect();
 
-        let (program, args) = self.argv();
-        parts.push(quote(&program.display().to_string()));
-        parts.extend(args.iter().map(|a| quote(a)));
+        parts.push(quote(&self.program.display().to_string()));
+        parts.extend(self.args().iter().map(|a| quote(a)));
 
         let mut line = parts.join(" ");
 
@@ -534,10 +515,7 @@ mod tests {
     fn pinning_stays_out_of_the_argv() {
         let mut cmd = Cmd::new("/bin/nail").sub("search");
         cmd.cpus = vec![0, 2];
-        let (program, args) = cmd.argv();
-
-        assert_eq!(program, PathBuf::from("/bin/nail"));
-        assert_eq!(args, ["search"]);
+        assert_eq!(cmd.args(), ["search"]);
         assert_eq!(cmd.line(), "/bin/nail search > /dev/null 2> /dev/null");
     }
 

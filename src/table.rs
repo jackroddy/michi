@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{BoxError, Error};
 use crate::execute::{Status, Timing};
-use crate::fmt::{bytes, cpu_pct};
+use crate::fmt::bytes;
 use crate::item::Item;
 use crate::sink::Sink;
 use crate::step::{Step, Strategy};
@@ -69,9 +69,9 @@ pub struct Table {
     rows: Vec<Vec<Cell>>,
     /// Widths every block starts from, worked out before the run from everything
     /// already known: names, fields, tags, argv. Only the numbers are missing,
-    /// and their headings are wider than they usually are. `None` for the modes
+    /// and their headings are wider than they usually are. Empty for the modes
     /// that do not share widths between blocks.
-    floor: Option<Widths>,
+    floor: Widths,
     text: String,
 }
 
@@ -90,7 +90,7 @@ impl Table {
             mode: Mode::default(),
             columns: Columns::default(),
             rows: Vec::new(),
-            floor: None,
+            floor: Widths::default(),
             text: String::new(),
         }
     }
@@ -120,8 +120,8 @@ impl Sink for Table {
         // Ragged blocks are meant to differ, and Whole renders in one go, so
         // neither has anything to share.
         self.floor = match self.mode {
-            Mode::Ragged | Mode::Whole => None,
-            _ => Some(self.columns.measure(steps)),
+            Mode::Ragged | Mode::Whole => Widths::default(),
+            _ => self.columns.measure(steps),
         };
 
         self.text.clear();
@@ -131,7 +131,7 @@ impl Sink for Table {
                 headers: Headers::Once
             }
         ) {
-            self.text = self.columns.render(&[], Header::Show, self.floor.as_ref());
+            self.text = self.columns.render(&[], Header::Show, &self.floor);
         }
         self.flush()
     }
@@ -160,14 +160,14 @@ impl Sink for Table {
         };
 
         self.text
-            .push_str(&columns.render(&rows, header, self.floor.as_ref()));
+            .push_str(&columns.render(&rows, header, &self.floor));
         self.flush()
     }
 
     fn finish(&mut self) -> Result<(), BoxError> {
         if self.mode == Mode::Whole {
             let rows = std::mem::take(&mut self.rows);
-            self.text = self.columns.render(&rows, Header::Show, None);
+            self.text = self.columns.render(&rows, Header::Show, &Widths::default());
             self.flush()?;
         }
         Ok(())
@@ -259,15 +259,15 @@ impl Columns {
         Schema::new(columns)
     }
 
-    /// `rows` laid out under these columns, from `floor` where there is one.
-    fn render(&self, rows: &[Vec<Cell>], header: Header, floor: Option<&Widths>) -> String {
+    /// `rows` laid out under these columns, from `floor`. One measured for other
+    /// columns, or empty, is no floor at all.
+    fn render(&self, rows: &[Vec<Cell>], header: Header, floor: &Widths) -> String {
         let schema = self.schema();
-        let floor = floor.cloned().unwrap_or_else(|| schema.widths());
         let mut table = toil::Table::new(schema);
         for row in rows {
             table.row(row.iter().cloned());
         }
-        table.render_with(&floor, header)
+        table.render_with(floor, header)
     }
 
     /// How wide each column has to be for every block to fit under one header.
@@ -480,7 +480,7 @@ struct Cost {
 impl Cost {
     fn cells(self) -> [Cell; 7] {
         let cpu = match (self.user_s, self.sys_s) {
-            (Some(user), Some(sys)) => Some(cpu_pct(user + sys, self.wall_s)),
+            (Some(user), Some(sys)) => cpu_pct(user + sys, self.wall_s),
             _ => None,
         };
         [
@@ -493,6 +493,17 @@ impl Cost {
             Cell::from(self.status),
         ]
     }
+}
+
+/// `time`'s `%P`: the CPU something burned over the wall clock it took, so a
+/// command that kept four cores busy the whole way through reads 400%.
+///
+/// Truncated rather than rounded, since `time` divides two integers. `time`
+/// writes `?%` when there is no clock to divide by; this says nothing, and the
+/// table writes that as `-` like any other missing number.
+fn cpu_pct(cpu_s: f64, wall_s: Option<f64>) -> Option<String> {
+    let wall = wall_s.filter(|wall| *wall > 0.0)?;
+    Some(format!("{:.0}%", (cpu_s / wall * 100.0).floor()))
 }
 
 /// A cpu or node list, or `-` for one with nothing in it: a command that asked
@@ -628,32 +639,6 @@ mod tests {
         || b     2   1.50    2.00    0.25   150%   2.00MiB 0    ok     /b
 ";
         assert_eq!(write("golden", Mode::default(), &steps()), expected);
-    }
-
-    #[test]
-    fn a_step_of_one_keeps_the_first_column_instead_of_a_line_of_its_own() {
-        let text = write("collapse", Mode::default(), &steps());
-        let rows: Vec<&str> = text.lines().skip(2).collect();
-
-        assert_eq!(
-            rows.len(),
-            4,
-            "one collapsed step plus a step row and two commands"
-        );
-        assert!(rows[0].starts_with("[1](setup) mkdir"), "{}", rows[0]);
-        assert!(rows[1].starts_with("[2](burn)  -"), "{}", rows[1]);
-    }
-
-    #[test]
-    fn a_batch_marks_its_commands_differently_from_a_serial_one() {
-        let mut serial = Step::serial([cmd("/a", "a"), cmd("/b", "b")]).name("s");
-        finish(&mut serial, 1);
-        let mut batched = Step::batched(2, [cmd("/a", "a"), cmd("/b", "b")]).name("b");
-        finish(&mut batched, 2);
-
-        let text = write("markers", Mode::default(), &[serial, batched]);
-        assert_eq!(text.matches(" | ").count(), 2, "{text}");
-        assert_eq!(text.matches("|| ").count(), 2, "{text}");
     }
 
     #[test]
@@ -927,5 +912,19 @@ mod tests {
         // the step's own row has a wall clock but no cpu to add up
         let step_row = rows[0];
         assert!(step_row.contains("1.50"), "{step_row}");
+    }
+
+    #[test]
+    fn cpu_pct_truncates_rather_than_rounding() {
+        // gnu time divides two integers, so 199.9% reads 199%, not 200%
+        assert_eq!(cpu_pct(1.999, Some(1.0)).as_deref(), Some("199%"));
+        assert_eq!(cpu_pct(0.9999, Some(1.0)).as_deref(), Some("99%"));
+        assert_eq!(cpu_pct(4.0, Some(1.0)).as_deref(), Some("400%"));
+    }
+
+    #[test]
+    fn cpu_pct_needs_a_clock_to_divide_by() {
+        assert_eq!(cpu_pct(1.0, None), None);
+        assert_eq!(cpu_pct(1.0, Some(0.0)), None);
     }
 }

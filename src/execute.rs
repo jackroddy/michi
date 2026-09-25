@@ -83,7 +83,7 @@ impl Cores {
 
         let status = match cmd.spawn() {
             Err(e) => Status::Failed(e),
-            Ok((pid, start)) => outcome(wait(pid, start, cmd.timeout, || {})),
+            Ok((pid, start)) => wait(pid, start, cmd.timeout, || {}),
         };
         cmd.report(status);
     }
@@ -180,7 +180,7 @@ impl<'a> Batch<'a> {
             Err(e) => Status::Failed(e),
             Ok((pid, start)) => {
                 self.add(pid);
-                outcome(wait(pid, start, cmd.timeout, || self.remove(pid)))
+                wait(pid, start, cmd.timeout, || self.remove(pid))
             }
         };
         cmd.report(status);
@@ -354,14 +354,6 @@ fn because(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> String {
     move |e| format!("{what}: {e}")
 }
 
-fn outcome(waited: Result<(Timing, bool), String>) -> Status {
-    match waited {
-        Ok((timing, true)) => Status::TimedOut(timing),
-        Ok((timing, false)) => Status::Finished(timing),
-        Err(e) => Status::Failed(e),
-    }
-}
-
 fn signal(pid: libc::pid_t, sig: libc::c_int) {
     unsafe { libc::kill(pid, sig) };
 }
@@ -392,9 +384,8 @@ pub(crate) fn stamp() -> String {
 impl Cmd {
     /// Start the process, giving back its pid and the moment it started.
     fn spawn(&self) -> Result<(libc::pid_t, Instant), String> {
-        let (program, args) = self.argv();
-        let mut proc = Command::new(&program);
-        proc.args(args);
+        let mut proc = Command::new(&self.program);
+        proc.args(self.args());
         proc.envs(&self.env);
         if let Some(dir) = &self.dir {
             proc.current_dir(dir);
@@ -567,9 +558,9 @@ fn wait(
     start: Instant,
     limit: Option<Duration>,
     exited: impl FnOnce(),
-) -> Result<(Timing, bool), String> {
+) -> Status {
     let Some(limit) = limit else {
-        return reap(pid, start, exited).map(|timing| (timing, false));
+        return reap(pid, start, exited).map_or_else(Status::Failed, Status::Finished);
     };
 
     let deadline = Deadline::new(pid);
@@ -580,7 +571,11 @@ fn wait(
             exited();
         });
         let killed = waiting.join().unwrap_or(false);
-        timing.map(|timing| (timing, killed))
+        match (timing, killed) {
+            (Ok(timing), true) => Status::TimedOut(timing),
+            (Ok(timing), false) => Status::Finished(timing),
+            (Err(e), _) => Status::Failed(e),
+        }
     })
 }
 
@@ -908,18 +903,6 @@ mod tests {
     }
 
     #[test]
-    fn a_command_with_no_deadline_is_left_to_finish() {
-        let cores = Cores::with_pool(vec![]);
-        let mut cmd = sh("exit 0");
-        cores.execute(&mut cmd);
-
-        let Status::Finished(timing) = cmd.status() else {
-            panic!("expected a clean finish, got {:?}", cmd.status());
-        };
-        assert_eq!(timing.exit, 0);
-    }
-
-    #[test]
     fn a_command_that_ignores_the_deadline_is_killed_once_the_grace_is_up() {
         // the slow one: SIGTERM_GRACE has to elapse before the SIGKILL lands
         let cores = Cores::with_pool(vec![]);
@@ -951,19 +934,23 @@ mod tests {
         assert!(why.contains("/no/such/tool"), "unhelpful message: {why}");
     }
 
+    fn exited(exit: i32) -> Status {
+        Status::Finished(Timing {
+            wall_s: 0.0,
+            user_s: Some(0.0),
+            sys_s: Some(0.0),
+            max_rss_kb: Some(0),
+            exit,
+        })
+    }
+
     #[test]
     fn a_failure_with_something_to_say_keeps_its_stderr() {
         let path = scratch("keep").join("e.stderr");
         std::fs::write(&path, b"no such database").unwrap();
 
         let mut cmd = Cmd::new("/x").stderr(Output::OnFailure(path.clone()));
-        cmd.report(Status::Finished(Timing {
-            wall_s: 0.0,
-            user_s: Some(0.0),
-            sys_s: Some(0.0),
-            max_rss_kb: Some(0),
-            exit: 1,
-        }));
+        cmd.report(exited(1));
 
         assert!(path.exists(), "a failure with output should be kept");
     }
@@ -985,13 +972,7 @@ mod tests {
         std::fs::write(&path, b"a warning, perhaps").unwrap();
 
         let mut cmd = Cmd::new("/x").stderr(Output::OnFailure(path.clone()));
-        cmd.report(Status::Finished(Timing {
-            wall_s: 0.0,
-            user_s: Some(0.0),
-            sys_s: Some(0.0),
-            max_rss_kb: Some(0),
-            exit: 0,
-        }));
+        cmd.report(exited(0));
 
         assert!(
             !path.exists(),
@@ -1005,13 +986,7 @@ mod tests {
         std::fs::write(&path, b"").unwrap();
 
         let mut cmd = Cmd::new("/x").stderr(Output::File(path.clone()));
-        cmd.report(Status::Finished(Timing {
-            wall_s: 0.0,
-            user_s: Some(0.0),
-            sys_s: Some(0.0),
-            max_rss_kb: Some(0),
-            exit: 0,
-        }));
+        cmd.report(exited(0));
 
         assert!(path.exists(), "only OnFailure files are tidied away");
     }

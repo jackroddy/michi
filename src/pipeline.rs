@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::cmd::{Cmd, Output};
 use crate::cpu::{Cores, Placement};
-use crate::error::{Error, Within};
+use crate::error::{BoxError, Error, Within};
 use crate::execute::{Batch, Status, policy, stamp};
 use crate::item::Item;
 use crate::label;
@@ -281,7 +281,7 @@ impl Pipeline<'_> {
         // field it leaves behind
         let mut steps = std::mem::take(&mut self.steps);
 
-        self.sinks.start(&steps)?;
+        self.sinks.each(|s| s.start(&steps))?;
 
         if let Some(dir) = &self.stderr_dir {
             std::fs::create_dir_all(dir).map_err(|source| Error::Io {
@@ -295,7 +295,7 @@ impl Pipeline<'_> {
         // both of these happen whichever way the run went, so the table is
         // finished and the stderr log is where it says it is by the time the
         // caller hears about anything
-        let finished = self.sinks.finish();
+        let finished = self.sinks.each(|s| s.finish());
         if let Some(dir) = &self.stderr_dir {
             std::fs::remove_dir(dir).ok();
             if let Some(parent) = dir.parent() {
@@ -341,7 +341,7 @@ impl Pipeline<'_> {
             ran?;
 
             if let Some(why) = step.aborts() {
-                self.sinks.abandoned(&why)?;
+                self.sinks.each(|s| s.abandoned(&why))?;
                 failure = Some((step.label(), why));
                 break;
             }
@@ -351,9 +351,9 @@ impl Pipeline<'_> {
         // start of their own, so a sink never sees a step end that it was not
         // told had begun
         for step in remaining_steps {
-            self.sinks.step_start(step)?;
+            self.sinks.each(|s| s.step_start(step))?;
             self.skip_rest(step)?;
-            self.sinks.step_done(step)?;
+            self.sinks.each(|s| s.step_done(step))?;
         }
 
         Ok(failure)
@@ -361,14 +361,14 @@ impl Pipeline<'_> {
 
     /// One step, start to finish, with its sinks told either side.
     fn run_step(&mut self, step: &mut Step<'_>) -> Result<(), Error> {
-        self.sinks.step_start(step)?;
+        self.sinks.each(|s| s.step_start(step))?;
         match step.strategy() {
             Some(Strategy::Serial) => self.serial(step)?,
             Some(Strategy::Batched { jobs }) => self.batch(step, jobs)?,
             None => self.closures(step)?,
         }
         self.skip_rest(step)?;
-        self.sinks.step_done(step)
+        self.sinks.each(|s| s.step_done(step))
     }
 
     /// One command at a time, stopping early if the step says to.
@@ -379,11 +379,13 @@ impl Pipeline<'_> {
             // a serial step is the only thing running, so its cores are free
             // the moment it asks: nothing here waits, and announcing before the
             // lease says the same thing as announcing after it
-            self.sinks.item_start(step, j, Item::Cmd(&step.cmds()[j]))?;
+            self.sinks
+                .each(|s| s.item_start(step, j, Item::Cmd(&step.cmds()[j])))?;
             self.cores.execute(&mut step.cmds_mut()[j]);
             step.elapsed_s = Some(start.elapsed().as_secs_f64());
 
-            self.sinks.item_done(step, j, Item::Cmd(&step.cmds()[j]))?;
+            self.sinks
+                .each(|s| s.item_done(step, j, Item::Cmd(&step.cmds()[j])))?;
             if step.skips() {
                 break;
             }
@@ -405,12 +407,12 @@ impl Pipeline<'_> {
         for j in 0..step.closures().len() {
             // a closure takes no cores, so there is nothing for it to wait on
             self.sinks
-                .item_start(step, j, Item::Closure(&step.closures()[j]))?;
+                .each(|s| s.item_start(step, j, Item::Closure(&step.closures()[j])))?;
             step.closures_mut()[j].execute();
             step.elapsed_s = Some(start.elapsed().as_secs_f64());
 
             self.sinks
-                .item_done(step, j, Item::Closure(&step.closures()[j]))?;
+                .each(|s| s.item_done(step, j, Item::Closure(&step.closures()[j])))?;
             if step.skips() {
                 break;
             }
@@ -492,7 +494,9 @@ impl Pipeline<'_> {
                 let told = match event {
                     // the copy still sitting in the step has not run, which is
                     // all a start has to say: its name, its fields, its tags
-                    Event::Started => sinks.item_start(step, k, Item::Cmd(&step.cmds()[k])),
+                    Event::Started => {
+                        sinks.each(|s| s.item_start(step, k, Item::Cmd(&step.cmds()[k])))
+                    }
 
                     Event::Done(cmd) => {
                         // the whole command comes back, not just its status, so
@@ -506,7 +510,7 @@ impl Pipeline<'_> {
                         // worker ever picked up
                         match step.cmds()[k].status() {
                             Status::NotRun => Ok(()),
-                            _ => sinks.item_done(step, k, Item::Cmd(&step.cmds()[k])),
+                            _ => sinks.each(|s| s.item_done(step, k, Item::Cmd(&step.cmds()[k]))),
                         }
                     }
                 };
@@ -532,14 +536,15 @@ impl Pipeline<'_> {
         for j in 0..step.cmds().len() {
             if matches!(step.cmds()[j].status(), Status::NotRun) {
                 step.cmds_mut()[j].status = Status::Skipped;
-                self.sinks.item_done(step, j, Item::Cmd(&step.cmds()[j]))?;
+                self.sinks
+                    .each(|s| s.item_done(step, j, Item::Cmd(&step.cmds()[j])))?;
             }
         }
         for j in 0..step.closures().len() {
             if matches!(step.closures()[j].status(), Status::NotRun) {
                 step.closures_mut()[j].status = Status::Skipped;
                 self.sinks
-                    .item_done(step, j, Item::Closure(&step.closures()[j]))?;
+                    .each(|s| s.item_done(step, j, Item::Closure(&step.closures()[j])))?;
             }
         }
         Ok(())
@@ -552,7 +557,6 @@ mod tests {
     use crate::closure::Closure;
     use crate::cmd::Memory;
     use crate::cpu::Cores;
-    use crate::error::BoxError;
     use crate::step::OnError;
     use std::sync::{Arc, Mutex};
 
@@ -1228,52 +1232,14 @@ mod tests {
 struct Sinks(Vec<Box<dyn Sink>>);
 
 impl Sinks {
-    fn start(&mut self, steps: &[Step<'_>]) -> Result<(), Error> {
+    /// Tell every sink in turn, stopping at the first one that fails.
+    fn each(
+        &mut self,
+        mut tell: impl FnMut(&mut dyn Sink) -> Result<(), BoxError>,
+    ) -> Result<(), Error> {
         self.0
             .iter_mut()
-            .try_for_each(|s| s.start(steps))
-            .map_err(Error::Sink)
-    }
-
-    fn step_start(&mut self, step: &Step<'_>) -> Result<(), Error> {
-        self.0
-            .iter_mut()
-            .try_for_each(|s| s.step_start(step))
-            .map_err(Error::Sink)
-    }
-
-    fn item_start(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> Result<(), Error> {
-        self.0
-            .iter_mut()
-            .try_for_each(|s| s.item_start(step, at, item))
-            .map_err(Error::Sink)
-    }
-
-    fn item_done(&mut self, step: &Step<'_>, at: usize, item: Item<'_>) -> Result<(), Error> {
-        self.0
-            .iter_mut()
-            .try_for_each(|s| s.item_done(step, at, item))
-            .map_err(Error::Sink)
-    }
-
-    fn step_done(&mut self, step: &Step<'_>) -> Result<(), Error> {
-        self.0
-            .iter_mut()
-            .try_for_each(|s| s.step_done(step))
-            .map_err(Error::Sink)
-    }
-
-    fn abandoned(&mut self, why: &str) -> Result<(), Error> {
-        self.0
-            .iter_mut()
-            .try_for_each(|s| s.abandoned(why))
-            .map_err(Error::Sink)
-    }
-
-    fn finish(&mut self) -> Result<(), Error> {
-        self.0
-            .iter_mut()
-            .try_for_each(|s| s.finish())
+            .try_for_each(|sink| tell(sink.as_mut()))
             .map_err(Error::Sink)
     }
 }

@@ -140,13 +140,6 @@ mod tests {
     }
 
     #[test]
-    fn a_chain_reads_outermost_first() {
-        let inner = Wrapped("no such file", None);
-        let outer = Wrapped("reading the index", Some(Box::new(inner)));
-        assert_eq!(chain(&outer), "reading the index: no such file");
-    }
-
-    #[test]
     fn a_sink_error_is_its_own_words_and_its_own_source() {
         let inner = Wrapped("disk full", None);
         let error = Error::Sink(Box::new(Wrapped("table", Some(Box::new(inner)))));

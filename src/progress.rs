@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::BoxError;
 use crate::execute::Status;
-use crate::fmt::{bytes, dash};
+use crate::fmt::bytes;
 use crate::item::Item;
 use crate::sink::Sink;
 use crate::step::Step;
@@ -627,14 +627,13 @@ impl State {
         };
 
         let detail = match (status, status.timing()) {
-            (Status::NotRun, _) => "not run".to_string(),
             (Status::Skipped, _) => "skipped".to_string(),
             (Status::Failed(why), _) => why.clone(),
             (_, Some(t)) => {
                 let mut detail = format!(
                     "{:>8.2}s {:>9}",
                     t.wall_s,
-                    t.max_rss_kb.map(bytes).unwrap_or_else(dash)
+                    t.max_rss_kb.map_or_else(|| "-".to_string(), bytes)
                 );
                 // the verdict stays last, where a failure is the
                 // final thing on the line rather than buried
@@ -646,7 +645,7 @@ impl State {
                 }
                 detail
             }
-            (_, None) => dash(),
+            (_, None) => "-".to_string(),
         };
 
         let dimmed = matches!(status, Status::NotRun | Status::Skipped);
