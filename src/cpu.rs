@@ -304,8 +304,7 @@ pub(crate) fn mask(cpus: &[usize]) -> libc::cpu_set_t {
     set
 }
 
-/// The node mask for `nodes`, and how many bits of it `set_mempolicy` should
-/// read.
+/// The node mask for `nodes`, and the `maxnode` to pass `set_mempolicy` with it.
 ///
 /// Built out here for the reason the cpu mask is: what installs it runs after
 /// the fork.
@@ -315,18 +314,21 @@ pub(crate) fn nodemask(nodes: &[usize]) -> (Vec<libc::c_ulong>, usize) {
         return (Vec::new(), 0);
     };
 
-    // the kernel reads ceil(bits / word) words out of the mask,
-    // so it has to be at least that long or the read runs off
-    // the end of it
+    // **note: the kernel decrements maxnode before reading the
+    //         mask (get_nodes in mm/mempolicy.c), so it reads
+    //         maxnode - 1 bits. highest + 1 drops the top node's
+    //         bit, and a lone node then reads as an empty mask:
+    //         EINVAL for bind, a silent MPOL_LOCAL for preferred.
+    //         libnuma passes one extra for the same reason
     let word = libc::c_ulong::BITS as usize;
-    let bits = highest + 1;
-    let mut mask = vec![0 as libc::c_ulong; bits.div_ceil(word)];
+    let read = highest + 1;
+    let mut mask = vec![0 as libc::c_ulong; read.div_ceil(word)];
 
     for node in nodes {
         mask[node / word] |= 1 << (node % word);
     }
 
-    (mask, bits)
+    (mask, read + 1)
 }
 
 /// A cpu list the way the kernel writes one: `0`, `0,2`, empty for nothing.
@@ -493,13 +495,13 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn nodemask_sets_a_bit_per_node() {
-        assert_eq!(nodemask(&[0]), (vec![0b1], 1));
-        assert_eq!(nodemask(&[1]), (vec![0b10], 2));
-        assert_eq!(nodemask(&[0, 1]), (vec![0b11], 2));
+        assert_eq!(nodemask(&[0]), (vec![0b1], 2));
+        assert_eq!(nodemask(&[1]), (vec![0b10], 3));
+        assert_eq!(nodemask(&[0, 1]), (vec![0b11], 3));
         // a node past the first word grows the mask rather than
         // writing off the end of it
         let past = libc::c_ulong::BITS as usize;
-        assert_eq!(nodemask(&[past]), (vec![0, 1], past + 1));
+        assert_eq!(nodemask(&[past]), (vec![0, 1], past + 2));
         // no nodes is the single node machine asking for no policy
         assert_eq!(nodemask(&[]), (Vec::new(), 0));
     }

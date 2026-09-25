@@ -593,7 +593,7 @@ mod tests {
     fn preferred_names_the_one_node_it_can_name() {
         assert_eq!(
             policy(Memory::Preferred, &[1]),
-            Some((MPOL_PREFERRED, vec![0b10], 2))
+            Some((MPOL_PREFERRED, vec![0b10], 3))
         );
         // MPOL_PREFERRED has no way to say "either of these two",
         // so a command that had to span says nothing at all
@@ -605,12 +605,51 @@ mod tests {
     fn bound_holds_a_command_to_every_node_it_took_cores_from() {
         assert_eq!(
             policy(Memory::Bound, &[1]),
-            Some((MPOL_BIND, vec![0b10], 2))
+            Some((MPOL_BIND, vec![0b10], 3))
         );
         assert_eq!(
             policy(Memory::Bound, &[0, 1]),
-            Some((MPOL_BIND, vec![0b11], 2))
+            Some((MPOL_BIND, vec![0b11], 3))
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_kernel_reads_every_node_in_the_mask() {
+        // memory policy is per thread and each test has its own,
+        // so binding this one leaks into nothing else. node 0
+        // exists on every numa kernel
+        let (mask, maxnode) = crate::cpu::nodemask(&[0]);
+        let rc =
+            unsafe { libc::syscall(libc::SYS_set_mempolicy, MPOL_BIND, mask.as_ptr(), maxnode) };
+        let err = std::io::Error::last_os_error();
+        if rc != 0 && err.raw_os_error() == Some(libc::ENOSYS) {
+            return;
+        }
+
+        // room for 1024 nodes, since get_mempolicy refuses a mask
+        // narrower than the machine's node count
+        let mut mode: libc::c_int = -1;
+        let mut got = [0 as libc::c_ulong; 1024 / libc::c_ulong::BITS as usize];
+        unsafe {
+            libc::syscall(
+                libc::SYS_get_mempolicy,
+                &mut mode,
+                got.as_mut_ptr(),
+                1024usize,
+                std::ptr::null::<libc::c_void>(),
+                0usize,
+            );
+            libc::syscall(
+                libc::SYS_set_mempolicy,
+                0,
+                std::ptr::null::<libc::c_ulong>(),
+                0usize,
+            );
+        }
+
+        assert_eq!(rc, 0, "set_mempolicy: {err}");
+        assert_eq!((mode, got[0]), (MPOL_BIND, 0b1));
     }
     use std::sync::atomic::AtomicUsize;
 
