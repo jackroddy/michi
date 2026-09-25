@@ -17,13 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chooses among the cpus free at that moment, so nothing waits longer than it
   did before. If sysfs leaves any cpu out of every node's cpulist, michi treats
   the whole pool as one node rather than place commands by a partial map.
-- On a machine with more than one memory node, `build` fails for a pipeline
-  whose commands ask for cores unless `PipelineBuilder::placement` is set,
-  taking a `Placement`. `Pack` puts a command on the node with the fewest free
-  cores that still fits, keeping the others whole for a wider request. `Spread`
-  puts it on the node with the most free cores, so concurrent commands land on
-  separate nodes until there are more of them than nodes. On a machine with one
-  node the setting is optional and changes nothing.
+- `PipelineBuilder::placement` chooses which node a command's cores come off
+  when more than one could hold them, taking a `Placement`. `Pack`, the
+  default, puts a command on the node with the fewest free cores that still
+  fits, keeping the others whole for a wider request. `Spread` puts it on the
+  node with the most free cores, so concurrent commands land on separate nodes
+  until there are more of them than nodes. On a machine with one node the
+  setting changes nothing.
 - A command placed on one node asks the kernel for its pages there. It spills
   onto another node when that one fills, so a command needing more memory than
   its node has runs slowly rather than dying.

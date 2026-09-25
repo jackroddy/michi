@@ -22,14 +22,12 @@ struct Cpu {
 }
 
 /// Which node a command's cores come off, when more than one could hold them.
-///
-/// A machine with more than one memory node has no default: a pipeline placing
-/// commands on one has to choose.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Placement {
     /// The node with the fewest free cores that still fits, keeping the others
     /// whole for a wider request. Concurrent commands share a node's cache and
     /// memory bandwidth.
+    #[default]
     Pack,
 
     /// The node with the most free cores, so concurrent commands land on
@@ -54,10 +52,8 @@ pub(crate) struct Cores {
     taken: Mutex<Vec<usize>>,
     freed: Condvar,
 
-    /// Which node a request comes off when more than one could hold it. `None`
-    /// is only ever left on a pool the pipeline has not asked to place across
-    /// nodes, where it packs.
-    pub(crate) placement: Option<Placement>,
+    /// Which node a request comes off when more than one could hold it.
+    pub(crate) placement: Placement,
 
     /// The memory nodes this process may allocate from, or empty where that
     /// could not be read.
@@ -100,7 +96,7 @@ impl Cores {
             pool: locate(&pool, &nodes()),
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
-            placement: None,
+            placement: Placement::Pack,
             mems: mems(),
         }
     }
@@ -127,7 +123,7 @@ impl Cores {
                 .collect(),
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
-            placement: None,
+            placement: Placement::Pack,
             mems: Vec::new(),
         }
     }
@@ -180,7 +176,7 @@ impl Cores {
             return None;
         }
 
-        let placed = place(&free, size, self.placement.unwrap_or(Placement::Pack));
+        let placed = place(&free, size, self.placement);
 
         // lowest first, so a run with the machine to itself
         // places its commands the same way every time and the
@@ -532,7 +528,7 @@ mod tests {
     #[test]
     fn spreading_takes_the_node_with_the_most_free() {
         let mut cores = Cores::with_layout(&[(0, 0), (2, 0), (4, 0), (6, 1), (8, 1), (10, 1)]);
-        cores.placement = Some(Placement::Spread);
+        cores.placement = Placement::Spread;
 
         let first = cores.acquire(2, &|| false).expect("a pair");
         assert_eq!(first.nodes(), [0]);
