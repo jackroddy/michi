@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   touch stay on one side of the interconnect. A request larger than any one node
   has free crosses as few of them as its size forces. Placement only ever
   chooses among the cpus free at that moment, so nothing waits longer than it
-  did before.
+  did before. If sysfs leaves any cpu out of every node's cpulist, michi treats
+  the whole pool as one node rather than place commands by a partial map.
 - On a machine with more than one memory node, `build` fails for a pipeline
   whose commands ask for cores unless `PipelineBuilder::placement` is set,
   taking a `Placement`. `Pack` puts a command on the node with the fewest free

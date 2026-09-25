@@ -88,21 +88,16 @@ impl Cores {
         let mut pool = Vec::new();
         let mut spoken_for = Vec::new();
 
-        let nodes = nodes();
-
         for cpu in allowed() {
             if spoken_for.contains(&cpu) {
                 continue;
             }
             spoken_for.extend(siblings(cpu));
-            pool.push(Cpu {
-                id: cpu,
-                node: nodes.get(&cpu).copied().unwrap_or(0),
-            });
+            pool.push(cpu);
         }
 
         Cores {
-            pool,
+            pool: locate(&pool, &nodes()),
             taken: Mutex::new(Vec::new()),
             freed: Condvar::new(),
             placement: None,
@@ -286,6 +281,23 @@ fn nodewise(free: &[Cpu]) -> Vec<Vec<Cpu>> {
     let mut out: Vec<Vec<Cpu>> = nodes.into_values().collect();
     out.sort_by_key(|node| (node.len(), node[0].id));
     out
+}
+
+/// The pool's cpus, each with the memory node it sits on.
+///
+/// A cpu that no node's cpulist names puts the whole pool on node 0, which is
+/// a pool with one node and so no policy at all.
+fn locate(cpus: &[usize], nodes: &BTreeMap<usize, usize>) -> Vec<Cpu> {
+    // a map missing one cpu may be missing a whole node, and
+    // placing by it would bind commands to nodes it has wrong
+    let whole = cpus.iter().all(|cpu| nodes.contains_key(cpu));
+
+    cpus.iter()
+        .map(|&id| Cpu {
+            id,
+            node: if whole { nodes[&id] } else { 0 },
+        })
+        .collect()
 }
 
 /// Which memory node each cpu belongs to.
@@ -542,6 +554,18 @@ mod tests {
             [0, 1],
             "one node filled before the next is touched"
         );
+    }
+
+    #[test]
+    fn a_cpu_no_node_names_puts_the_pool_on_one_node() {
+        let nodes = BTreeMap::from([(0, 0), (1, 1), (2, 0)]);
+
+        let placed = locate(&[0, 1, 2], &nodes);
+        assert_eq!(placed.iter().map(|c| c.node).collect::<Vec<_>>(), [0, 1, 0]);
+
+        // node 1's cpulist unread, so cpu 3 is nowhere
+        let partial = locate(&[0, 1, 2, 3], &nodes);
+        assert!(partial.iter().all(|c| c.node == 0));
     }
 
     #[test]
