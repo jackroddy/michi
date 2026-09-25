@@ -65,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The table is laid out by the [toil](https://crates.io/crates/toil) crate,
+  michi's first dependency besides libc. The file it writes is unchanged.
 - `PipelineBuilder::build` and `Pipeline::run` return `michi::Error` in place
   of `anyhow::Error`, and anyhow is no longer a dependency. `Error::Cores` and
   `Error::Pool` say what did not fit and what it was carved from (`Within`),

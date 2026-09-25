@@ -11,6 +11,7 @@ exclude = ["CLAUDE.md"]
 
 [dependencies]
 libc = "0.2.189"
+toil = "0.1"
 
 [dev-dependencies]
 anyhow = "1.0.104"

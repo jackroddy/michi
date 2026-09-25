@@ -19,6 +19,8 @@ use crate::item::Item;
 use crate::sink::Sink;
 use crate::step::{Step, Strategy};
 
+use toil::{Align, Cell, Column, Header, Schema, Widths};
+
 /// Marks a command that ran after the one above it.
 const SERIAL: &str = "|";
 /// Marks a command that ran alongside the others in its step.
@@ -75,7 +77,7 @@ pub struct Table {
     /// already known: names, fields, tags, argv. Only the numbers are missing,
     /// and their headings are wider than they usually are. `None` for the modes
     /// that do not share widths between blocks.
-    floor: Option<Vec<usize>>,
+    floor: Option<Widths>,
     text: String,
 }
 
@@ -135,7 +137,7 @@ impl Sink for Table {
                 headers: Headers::Once
             }
         ) {
-            self.text = render(&self.columns.header(), &[], true, self.floor.as_deref());
+            self.text = self.columns.render(&[], Header::Show, self.floor.as_ref());
         }
         self.flush()
     }
@@ -152,30 +154,26 @@ impl Sink for Table {
 
         let mut rows = columns.block(step);
 
-        let show_header = match self.mode {
+        let header = match self.mode {
             Mode::Whole => {
                 self.rows.append(&mut rows);
                 return Ok(());
             }
             Mode::Blocks {
                 headers: Headers::Once,
-            } => false,
-            _ => true,
+            } => Header::Hide,
+            _ => Header::Show,
         };
 
-        self.text.push_str(&render(
-            &columns.header(),
-            &rows,
-            show_header,
-            self.floor.as_deref(),
-        ));
+        self.text
+            .push_str(&columns.render(&rows, header, self.floor.as_ref()));
         self.flush()
     }
 
     fn finish(&mut self) -> Result<(), BoxError> {
         if self.mode == Mode::Whole {
             let rows = std::mem::take(&mut self.rows);
-            self.text = render(&self.columns.header(), &rows, true, None);
+            self.text = self.columns.render(&rows, Header::Show, None);
             self.flush()?;
         }
         Ok(())
@@ -202,6 +200,13 @@ struct Columns {
     /// one node has nothing to say here, so it gets no column rather than one
     /// reading `0` all the way down.
     nodes: bool,
+
+    /// How wide the cpus column is reserved before anything has cpus to show.
+    //
+    // every cpus cell still says `-` before the run, but how
+    // many each command gets is settled, so the column can be
+    // sized for the widest of those rather than for a dash
+    cpus_width: usize,
 }
 
 impl Columns {
@@ -212,6 +217,7 @@ impl Columns {
         let mut tags = BTreeSet::new();
         let mut cpus = false;
         let mut nodes = false;
+        let mut cpus_width = 0;
 
         for step in steps {
             for item in step.items() {
@@ -222,6 +228,7 @@ impl Columns {
                 tags.extend(item.tags().iter().cloned());
                 cpus |= placed;
                 nodes |= placed && item.numa();
+                cpus_width = cpus_width.max(crate::cpu::list_width(item.cores()));
             }
         }
 
@@ -230,7 +237,38 @@ impl Columns {
             tags: tags.into_iter().collect(),
             cpus,
             nodes,
+            cpus_width,
         }
+    }
+
+    /// The columns as toil lays them out: argv last and unpadded, and room kept
+    /// for the cpus and policy cells that are still dashes before the run.
+    fn schema(&self) -> Schema {
+        let header = self.header();
+        let last = header.len() - 1;
+        let columns = header.into_iter().enumerate().map(|(i, label)| {
+            let column = Column::new(label);
+            match i {
+                _ if i == last => column.ragged(),
+                _ if self.cpus && i == last - 1 => column.min_width(self.cpus_width),
+                // prefer:N is as wide as a policy gets on a machine
+                // with under ten nodes, so that is the guess
+                _ if self.nodes && i == last - 2 => column.min_width("prefer:0".len()),
+                _ => column,
+            }
+        });
+        Schema::new(columns.collect::<Vec<_>>())
+    }
+
+    /// `rows` laid out under these columns, from `floor` where there is one.
+    fn render(&self, rows: &[Vec<Cell>], header: Header, floor: Option<&Widths>) -> String {
+        let schema = self.schema();
+        let floor = floor.cloned().unwrap_or_else(|| schema.widths());
+        let mut table = toil::Table::new(schema);
+        for row in rows {
+            table.row(row.iter().cloned());
+        }
+        table.render_with(&floor, header)
     }
 
     fn header(&self) -> Vec<String> {
@@ -263,13 +301,13 @@ impl Columns {
             Some([]) | None => dash(),
             Some(cpus) => crate::cpu::list(cpus),
         };
-        cells.insert(cells.len() - 1, Cell::left(text));
+        cells.insert(cells.len() - 1, Cell::from(text));
     }
 
     /// Slots `text` in where the cpus cell goes.
     fn put_cell(&self, cells: &mut Vec<Cell>, text: &str) {
         if self.cpus {
-            cells.insert(cells.len() - 1, Cell::left(text));
+            cells.insert(cells.len() - 1, Cell::from(text));
         }
     }
 
@@ -284,7 +322,7 @@ impl Columns {
             Some([]) | None => dash(),
             Some(nodes) => crate::cpu::list(nodes),
         };
-        cells.insert(cells.len() - 1, Cell::left(text));
+        cells.insert(cells.len() - 1, Cell::from(text));
     }
 
     /// Slots the memory policy cell in after the node one. A preference that
@@ -299,7 +337,7 @@ impl Columns {
             Some((policy, None)) => policy,
             Some((policy, Some(note))) => format!("{policy} ({note})"),
         };
-        cells.insert(cells.len() - 1, Cell::left(text));
+        cells.insert(cells.len() - 1, Cell::from(text));
     }
 
     /// One step's rows: its own line, then a line per command.
@@ -310,13 +348,14 @@ impl Columns {
         // and keeps the first column instead, with its command filling in the rest
         let alone = step.items().count() == 1;
         let first = if alone {
-            Cell::left(step.label())
+            Cell::from(step.label())
         } else {
             rows.push(self.step_row(step));
-            Cell::right(match step.strategy() {
+            Cell::from(match step.strategy() {
                 Some(Strategy::Batched { .. }) => BATCH,
                 _ => SERIAL,
             })
+            .align(Align::Right)
         };
 
         for item in step.items() {
@@ -340,40 +379,14 @@ impl Columns {
     ///
     /// Everything but the numbers is already known before the run, and the
     /// headings above the numbers are wider than the numbers usually are.
-    fn measure(&self, steps: &[Step<'_>]) -> Vec<usize> {
-        let header = self.header();
-        let mut widths = vec![0; header.len()];
-
-        widen(&mut widths, &head_cells(&header));
-        for step in steps {
-            for row in self.block(step) {
-                widen(&mut widths, &row);
-            }
-        }
-
-        // every cpus cell above still says `-`, since nothing has been given
-        // any cpus yet. how many each command gets is settled though, so the
-        // column can be sized for the widest of those rather than for a dash
-        if self.cpus {
-            let at = widths.len() - 2;
-            let most = steps
-                .iter()
-                .flat_map(Step::items)
-                .map(|item| crate::cpu::list_width(item.cores()))
-                .max()
-                .unwrap_or(0);
-            widths[at] = widths[at].max(most);
-        }
-
-        // the policy cells are dashes too until the run. prefer:N
-        // is as wide as they come on a machine with under ten
-        // nodes, so that is the guess
-        if self.nodes {
-            let at = widths.len() - 3;
-            widths[at] = widths[at].max("prefer:0".len());
-        }
-
-        widths
+    fn measure(&self, steps: &[Step<'_>]) -> Widths {
+        let schema = self.schema();
+        let rows: Vec<_> = steps
+            .iter()
+            .flat_map(|step| self.block(step))
+            .map(|cells| schema.row(cells))
+            .collect();
+        schema.measure(&rows)
     }
 }
 
@@ -401,14 +414,14 @@ impl Metrics {
         };
 
         [
-            Cell::left(secs(self.wall_s)),
-            Cell::left(secs(self.user_s)),
-            Cell::left(secs(self.sys_s)),
-            Cell::left(cpu),
-            Cell::left(self.max_rss_kb.map(bytes).unwrap_or_else(dash)),
-            Cell::left(self.exit.map(|e| e.to_string()).unwrap_or_else(dash)),
-            Cell::left(self.status.unwrap_or("-")),
-            Cell::left(self.argv.unwrap_or_else(dash)),
+            Cell::from(secs(self.wall_s)),
+            Cell::from(secs(self.user_s)),
+            Cell::from(secs(self.sys_s)),
+            Cell::from(cpu),
+            Cell::from(self.max_rss_kb.map(bytes)),
+            Cell::from(self.exit.map(|e| e.to_string())),
+            Cell::from(self.status),
+            Cell::from(self.argv),
         ]
     }
 }
@@ -416,9 +429,9 @@ impl Metrics {
 impl Columns {
     /// The step's own line: measured wall clock, and its commands' CPU added up.
     fn step_row(&self, step: &Step<'_>) -> Vec<Cell> {
-        let mut cells = vec![Cell::left(step.label()), Cell::left("-")];
+        let mut cells = vec![Cell::from(step.label()), Cell::missing()];
         cells.extend(std::iter::repeat_n(
-            Cell::left("-"),
+            Cell::missing(),
             self.keys.len() + self.tags.len(),
         ));
 
@@ -466,7 +479,7 @@ impl Columns {
     /// One item's line, whichever kind it is. The columns a closure has no
     /// answer for come back `None` from [`Item`] and print as `-`.
     fn row(&self, first: Cell, item: Item<'_>, pool: Pool<'_>) -> Vec<Cell> {
-        let mut cells = vec![first, Cell::left(item.label())];
+        let mut cells = vec![first, Cell::from(item.label())];
         cells.extend(self.key_cells(item.fields(), item.tags()));
 
         // two separate questions: what it cost, and how it went. one that could
@@ -502,12 +515,12 @@ impl Columns {
         let mut cells: Vec<Cell> = self
             .keys
             .iter()
-            .map(|k| Cell::left(fields.get(k).map(String::as_str).unwrap_or("-")))
+            .map(|k| Cell::from(fields.get(k)))
             .collect();
         cells.extend(
             self.tags
                 .iter()
-                .map(|t| Cell::left(if tags.contains(t) { "x" } else { "-" })),
+                .map(|t| Cell::from(tags.contains(t).then_some("x"))),
         );
         cells
     }
@@ -536,105 +549,6 @@ fn status_word(status: &Status) -> &'static str {
         Status::Finished(t) if t.ok() => "ok",
         _ => "fail",
     }
-}
-
-/// A cell and which side its padding goes on.
-#[derive(Clone, Debug)]
-struct Cell {
-    text: String,
-    right: bool,
-}
-
-impl Cell {
-    fn left(text: impl Into<String>) -> Cell {
-        Cell {
-            text: text.into(),
-            right: false,
-        }
-    }
-
-    fn right(text: impl Into<String>) -> Cell {
-        Cell {
-            text: text.into(),
-            right: true,
-        }
-    }
-}
-
-/// Lay out the rows, every column padded to its widest cell, under a commented
-/// header and dashed separator if `show_header` says so.
-///
-/// The header sets the width of every column whether it is printed or not. That
-/// is what keeps blocks lined up under a header printed once at the top: they
-/// share its widths as a floor, and only drift apart where a value is wider than
-/// the label above it.
-fn render(
-    header: &[String],
-    rows: &[Vec<Cell>],
-    show_header: bool,
-    floor: Option<&[usize]>,
-) -> String {
-    let head = head_cells(header);
-
-    // a floor from a different set of columns is no floor at all
-    let mut widths = match floor.filter(|floor| floor.len() == header.len()) {
-        Some(floor) => floor.to_vec(),
-        None => vec![0; header.len()],
-    };
-    widen(&mut widths, &head);
-    for row in rows {
-        widen(&mut widths, row);
-    }
-
-    let mut out = String::new();
-    if show_header {
-        let last = header.len() - 1;
-        let mut sep: Vec<Cell> = widths.iter().map(|w| Cell::left("-".repeat(*w))).collect();
-        sep[0] = Cell::left(format!("# {}", "-".repeat(widths[0].saturating_sub(2))));
-        // argv is unpadded, so underline the label rather than the whole column
-        sep[last] = Cell::left("-".repeat(header[last].chars().count()));
-
-        write_row(&mut out, &head, &widths);
-        write_row(&mut out, &sep, &widths);
-    }
-    for row in rows {
-        write_row(&mut out, row, &widths);
-    }
-    out
-}
-
-/// The header as cells. The "# " marker is absorbed into the first column's
-/// width, so the labels stay lined up over the data below them.
-fn head_cells(header: &[String]) -> Vec<Cell> {
-    let mut head: Vec<Cell> = header.iter().map(Cell::left).collect();
-    head[0] = Cell::left(format!("# {}", header[0]));
-    head
-}
-
-fn widen(widths: &mut [usize], cells: &[Cell]) {
-    for (i, cell) in cells.iter().enumerate() {
-        widths[i] = widths[i].max(cell.text.chars().count());
-    }
-}
-
-fn write_row(out: &mut String, cells: &[Cell], widths: &[usize]) {
-    let last = cells.len() - 1;
-    for (i, cell) in cells.iter().enumerate() {
-        if i == last {
-            out.push_str(&cell.text);
-            break;
-        }
-        let pad = " ".repeat(widths[i].saturating_sub(cell.text.chars().count()));
-        if cell.right {
-            out.push_str(&pad);
-            out.push_str(&cell.text);
-        } else {
-            out.push_str(&cell.text);
-            out.push_str(&pad);
-        }
-        out.push(' ');
-    }
-    out.push('\n');
 }
 
 #[cfg(test)]
@@ -1007,11 +921,13 @@ mod tests {
 
     #[test]
     fn a_row_with_nothing_measured_is_all_dashes() {
-        let cells = Metrics::default().cells();
-        assert_eq!(cells.len(), METRICS.len());
-        for cell in &cells {
-            assert_eq!(cell.text, "-");
-        }
+        let schema = Schema::new(METRICS);
+        let mut table = toil::Table::new(schema.clone());
+        table.row(Metrics::default().cells());
+        let line = table.render_with(&schema.widths(), Header::Hide);
+
+        let words: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(words, ["-"; METRICS.len()], "{line}");
     }
 
     #[test]
