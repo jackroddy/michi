@@ -103,7 +103,7 @@ impl<'a> Item<'a> {
         }
     }
 
-    /// The memory policy it ran under: `prefer:1`, `bind:0,1` or `default`.
+    /// The memory policy it ran under: `prefer:1`, `bind:0-1` or `default`.
     /// `None` for a closure, for a command never placed on a node, and for one
     /// refused its bind.
     pub fn policy(self) -> Option<String> {

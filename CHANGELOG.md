@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `dry_run` and the table say which node a command landed on. A machine with one
   node has nothing to say there, so it gets no node column and no node in the
   `dry_run` line. Beside the node column, a `policy` column holds the memory
-  policy each command ran under (`prefer:1`, `bind:0,1` or `default`), with the
+  policy each command ran under (`prefer:1`, `bind:0-1` or `default`), with the
   reason when a preference was left unset. `dry_run` shows the same policy at
   the end of each command's line, and marks a command that would wait for cores
   another command in its step still holds.
@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The table's cpus column and `dry_run` write cpu lists in the form
+  `taskset -c` takes, with runs compressed: `0-3` for consecutive cpus,
+  `0-94:2` for every other one, and `0,2` as before. Node lists follow the same
+  rule. On a machine whose cpu numbers alternate between nodes, one node's cpus
+  come out as a single stride.
 - `Cmd` keeps its options and positionals per subcommand rather than in one flat
   bucket each. `sub` starts a level; `flag`, `arg` and `path` fill in the
   current one, so `Cmd::new("git").arg("-C", dir).sub("commit").arg("-m", msg)`

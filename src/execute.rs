@@ -281,7 +281,7 @@ pub(crate) enum Policy {
 }
 
 impl Policy {
-    /// The policy the command runs under: `prefer:1`, `bind:0,1` or `default`.
+    /// The policy the command runs under: `prefer:1`, `bind:0-1` or `default`.
     /// `None` for a refused bind, which never runs.
     pub(crate) fn label(&self) -> Option<String> {
         match self {

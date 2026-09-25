@@ -487,22 +487,50 @@ pub(crate) fn nodemask(nodes: &[usize]) -> (Vec<libc::c_ulong>, usize) {
     (mask, read + 1)
 }
 
-/// A cpu list the way the kernel writes one: `0`, `0,2`, empty for nothing.
+/// A cpu list in the form `taskset -c` takes: `0`, `0,2`, `0-3`, `0-94:2`,
+/// empty for nothing.
 pub(crate) fn list(cpus: &[usize]) -> String {
-    let parts: Vec<String> = cpus.iter().map(|cpu| cpu.to_string()).collect();
+    let mut cpus = cpus.to_vec();
+    cpus.sort_unstable();
+    cpus.dedup();
+
+    let mut parts = Vec::new();
+    let mut at = 0;
+    while at < cpus.len() {
+        let first = cpus[at];
+        let step = cpus.get(at + 1).map_or(0, |next| next - first);
+        let mut last = at;
+        while step > 0 && cpus.get(last + 1) == Some(&(cpus[last] + step)) {
+            last += 1;
+        }
+
+        // a step of 1 is a range from two cpus on, and any other
+        // step from three: 0,2 is shorter than 0-2:2
+        match (last - at + 1, step) {
+            (2.., 1) => parts.push(format!("{first}-{}", cpus[last])),
+            (3.., _) => parts.push(format!("{first}-{}:{step}", cpus[last])),
+            _ => {
+                last = at;
+                parts.push(first.to_string());
+            }
+        }
+        at = last + 1;
+    }
     parts.join(",")
 }
 
-/// How wide the list for `cores` cpus comes out if every one of them is a
-/// single digit: one digit each, and a comma between them.
+/// How wide the list for `cores` cpus comes out if they are low-numbered and
+/// evenly spaced: `0`, `0,2`, and a run such as `0-10:2` from three on.
 ///
 /// Room to reserve before anything has run and we know which cpus they are.
-/// The low guess on purpose — a cpu past the first ten grows the column past
-/// this, and nothing is reserved for a width most runs will not use.
+/// The low guess on purpose — a higher cpu or a ragged list grows the column
+/// past this, and nothing is reserved for a width most runs will not use.
 pub(crate) fn list_width(cores: usize) -> usize {
     match cores {
         0 => 0,
-        cores => 2 * cores - 1,
+        1 => 1,
+        2 => 3,
+        _ => "0-10:2".len(),
     }
 }
 
@@ -562,6 +590,33 @@ fn parse_list(text: &str) -> Vec<usize> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_list_compresses_runs_and_leaves_a_step_of_one_unsaid() {
+        assert_eq!(list(&[]), "");
+        assert_eq!(list(&[3]), "3");
+        assert_eq!(list(&[0, 2]), "0,2");
+        assert_eq!(list(&[0, 1]), "0-1");
+        assert_eq!(list(&[0, 1, 2, 3]), "0-3");
+        assert_eq!(list(&[0, 2, 4, 6]), "0-6:2");
+        // a pair a step apart is no run, so the next one starts
+        // from its second cpu
+        assert_eq!(list(&[0, 2, 3, 4]), "0,2-4");
+        assert_eq!(
+            list(&[4, 0, 2, 2]),
+            "0-4:2",
+            "sorted and deduplicated first"
+        );
+
+        // one node of a machine that numbers its nodes alternately,
+        // and a request that took five off one node and the rest off
+        // the other
+        let odd: Vec<usize> = (1..96).step_by(2).collect();
+        assert_eq!(list(&odd), "1-95:2");
+        let mut spanning = vec![0, 1, 2, 3, 4];
+        spanning.extend((6..=94).step_by(2));
+        assert_eq!(list(&spanning), "0-4,6-94:2");
+    }
 
     #[test]
     fn parse_list_reads_what_the_kernel_writes() {
