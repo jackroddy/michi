@@ -650,6 +650,9 @@ fn secs(tv: libc::timeval) -> f64 {
     tv.tv_sec as f64 + tv.tv_usec as f64 / 1_000_000.0
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod numa;
+
 #[cfg(test)]
 mod tests {
     use super::*;

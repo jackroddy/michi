@@ -165,6 +165,16 @@ impl Cores {
         nodes
     }
 
+    /// This pool's cpus, grouped by the node they sit on.
+    #[cfg(test)]
+    pub(crate) fn by_node(&self) -> BTreeMap<usize, Vec<usize>> {
+        let mut nodes: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for cpu in &self.pool {
+            nodes.entry(cpu.node).or_default().push(cpu.id);
+        }
+        nodes
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.pool.len()
     }
@@ -541,7 +551,7 @@ fn siblings(cpu: usize) -> Vec<usize> {
 }
 
 /// A kernel cpulist: `0-1`, `16`, `0-3,8-11`.
-fn parse_list(text: &str) -> Vec<usize> {
+pub(crate) fn parse_list(text: &str) -> Vec<usize> {
     let mut out = Vec::new();
 
     for part in text.trim().split(',').filter(|p| !p.is_empty()) {
