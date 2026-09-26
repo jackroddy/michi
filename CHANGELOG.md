@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-25
+
 ### Added
 
 - A command's cores now come off one memory node. A command asking for `cores`
@@ -55,8 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason when a preference was left unset. `dry_run` shows the same policy at
   the end of each command's line, and marks a command that would wait for cores
   another command in its step still holds.
-- `Item::nodes()`, `Item::numa()`, `Item::policy()` and `Item::policy_note()`,
-  so a sink of your own can report placement the way the built-in table does.
+- `Item::nodes()`, `Item::numa()`, `Item::pooled()`, `Item::policy()` and
+  `Item::policy_note()`, so a sink of your own can report placement the way the
+  built-in table does.
 - `Progress` names the node beside the time and memory on a finished line. It
   says nothing while a command is still running, because a batch hands its
   placement back only once the command is done, and nothing at all on a machine
@@ -148,5 +151,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   batch cancellation, which signals the commands still running once a failure
   has ended the step.
 
-[Unreleased]: https://github.com/jackroddy/michi/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jackroddy/michi/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jackroddy/michi/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jackroddy/michi/releases/tag/v0.1.0
