@@ -7,13 +7,7 @@ use crate::closure::Closure;
 use crate::cmd::Cmd;
 use crate::execute::{Policy, Status};
 
-/// A command or a closure, whichever a step happens to hold.
-///
-/// A step holds one kind or the other, never both, but a sink almost always
-/// wants to treat them the same way: each has a name, a status, fields and
-/// tags. The places they genuinely differ are the methods that give back
-/// `None` — a closure has no argv to paste, no stderr file to point at, and no
-/// exit code, because none of those are things a thread has.
+/// A command or a closure, whichever a step holds.
 #[derive(Clone, Copy, Debug)]
 pub enum Item<'a> {
     Cmd(&'a Cmd),
@@ -67,8 +61,8 @@ impl<'a> Item<'a> {
         }
     }
 
-    /// What it exited with. A closure never exited: it returned, and its status
-    /// already says how that went.
+    /// What it exited with. `None` for a closure, whose status says how it
+    /// returned.
     pub fn exit(self) -> Option<i32> {
         match self {
             Item::Cmd(cmd) => cmd.status().timing().map(|t| t.exit),
@@ -76,9 +70,7 @@ impl<'a> Item<'a> {
         }
     }
 
-    /// How many cores it asked for, zero for one that asked for none. This is
-    /// answerable before it runs; which cpus it ends up on is not, so the two
-    /// are separate questions.
+    /// How many cores it asked for, zero for one that asked for none.
     pub fn cores(self) -> usize {
         match self {
             Item::Cmd(cmd) => cmd.cores.unwrap_or(0),
@@ -86,9 +78,8 @@ impl<'a> Item<'a> {
         }
     }
 
-    /// The cpus it was pinned to, which is empty until it holds them and again
-    /// once it lets them go. `None` for a closure, which runs wherever the
-    /// pipeline itself is allowed to.
+    /// The cpus it is pinned to: empty until it holds them and after it
+    /// releases them. `None` for a closure, which holds no cpus of its own.
     pub fn cpus(self) -> Option<&'a [usize]> {
         match self {
             Item::Cmd(cmd) => Some(&cmd.cpus),

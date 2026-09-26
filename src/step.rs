@@ -22,9 +22,7 @@ pub enum Strategy {
     Batched { jobs: usize },
 }
 
-/// What a step holds. Commands and closures are run and reported differently
-/// enough to be kept apart: only commands have a strategy to run under, cores
-/// to ask for, or an argv to print.
+/// What a step holds: commands or closures.
 #[derive(Debug)]
 pub(crate) enum Items<'a> {
     Cmds {
@@ -36,7 +34,7 @@ pub(crate) enum Items<'a> {
         /// Where each of these takes its pages from, unless it said for itself.
         memory: Option<Memory>,
     },
-    /// Serial by definition, for now: nothing here spawns a thread.
+    /// Closures, run one after another on the calling thread.
     Closures(Vec<Closure<'a>>),
 }
 
@@ -55,9 +53,10 @@ pub struct Step<'a> {
     /// pipeline is built.
     pub(crate) pooled: bool,
 
-    /// The cpus of that pool and the nodes they sit on, once the step has
-    /// started. Nodes are empty on a machine with one.
+    /// The cpus of that pool, once the step has started.
     pub(crate) pool_cpus: Vec<usize>,
+
+    /// The nodes those cpus sit on, empty on a machine with one.
     pub(crate) pool_nodes: Vec<usize>,
 }
 
@@ -80,8 +79,7 @@ impl<'a> Step<'a> {
         })
     }
 
-    /// One closure after another. There is no batched form: a closure runs on
-    /// the thread that reached it.
+    /// One closure after another, on the thread running the pipeline.
     pub fn from_closures(closures: impl IntoIterator<Item = Closure<'a>>) -> Self {
         Step::of(Items::Closures(closures.into_iter().collect()))
     }
@@ -106,7 +104,6 @@ impl<'a> Step<'a> {
     /// cores. If the machine cannot spare that many at once, the commands that
     /// cannot be placed wait for the ones that can.
     pub fn cores(mut self, cores: usize) -> Self {
-        // a closure asks for none, so there is nothing here to set
         if let Items::Cmds { cores: c, .. } = &mut self.items {
             *c = Some(cores);
         }
@@ -116,17 +113,15 @@ impl<'a> Step<'a> {
     /// Carve `cores` physical cores for this step as it starts, out of the
     /// pipeline's pool if it has one, and give them back when it ends.
     ///
-    /// A command here that asks for no cores of its own runs across the whole
-    /// pool, sharing it with the others, and the scheduler moves it wherever a
-    /// core is idle. One that asks for some leases them out of the pool as
-    /// usual. Closures are pinned to the pool too.
+    /// A command with no cores of its own may run on any core of the pool; one
+    /// that asks for some leases them from it. Closures are pinned to the pool.
     pub fn pool(mut self, cores: usize) -> Self {
         self.pool = Some(cores);
         self
     }
 
-    /// Where these commands take their pages from, for any that did not say for
-    /// itself.
+    /// Where these commands take their pages from, for any that did not set
+    /// their own.
     pub fn memory(mut self, memory: Memory) -> Self {
         // a closure holds no cores, so it is never placed anywhere
         // to take its pages from
@@ -146,8 +141,8 @@ impl<'a> Step<'a> {
         self
     }
 
-    /// What to call this step. Empty until the pipeline is built, which is when
-    /// a step learns its number.
+    /// What to call this step. Without a name it is empty until the pipeline
+    /// is built and numbers it.
     pub fn label(&self) -> String {
         match self.index {
             Some(index) => label::label(index, self.name.as_deref()),
@@ -169,8 +164,7 @@ impl<'a> Step<'a> {
         }
     }
 
-    /// Everything this step holds, in the order it was given, whichever kind it
-    /// holds. This is what a sink sees.
+    /// Everything this step holds, in the order it was given.
     pub fn items(&self) -> impl Iterator<Item = Item<'_>> {
         self.cmds()
             .iter()
@@ -219,9 +213,6 @@ impl<'a> Step<'a> {
     }
 
     /// What to say about the thing that ends the run, if this step holds one.
-    ///
-    /// A command names the line you could paste to see it again; a closure has
-    /// no such line, so it goes by its name alone.
     pub(crate) fn aborts(&self) -> Option<String> {
         (self.on_error == OnError::Abort)
             .then(|| self.failed())
@@ -235,13 +226,13 @@ impl<'a> Step<'a> {
                 .iter()
                 .find(|c| c.status().failed())
                 .map(|c| format!("{} failed: {}", c.label(), c.line())),
-            // a closure has no stderr file to go and read, so what it said when
-            // it failed is only ever going to be here
+            // a closure has no stderr file, so its message is the
+            // only record of why it failed
             Items::Closures(closures) => {
                 closures.iter().find(|c| c.status().failed()).map(|c| {
                     match c.status() {
                         Status::Failed(why) => format!("{} failed: {why}", c.label()),
-                        // a failure with no words of its own
+                        // a failure that carries no message
                         _ => format!("{} failed", c.label()),
                     }
                 })

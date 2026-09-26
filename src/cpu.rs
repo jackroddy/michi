@@ -1,13 +1,11 @@
 //! Which CPUs a command is allowed to run on.
 //!
-//! A command asks for a number of cores and never says which. [`Cores`] keeps
-//! track of what is free, hands out that many, and takes them back when the
-//! command is done. The pinning happens in the child itself, between the fork
-//! and the exec.
+//! A command asks for a number of cores and never says which. [`Cores`] tracks
+//! which are free, leases that many, and takes them back when the command is
+//! done. The child pins itself between the fork and the exec.
 //!
-//! Which ones it hands out is not arbitrary. A command's cores come off one
-//! memory node wherever enough of that node is free, so its threads and the
-//! memory they touch stay on the same side of the interconnect.
+//! A command's cores come off one memory node wherever that node has enough
+//! free, so its threads and the memory they touch are on the same node.
 
 use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
@@ -35,21 +33,15 @@ pub enum Placement {
     Spread,
 }
 
-/// The cores a pipeline has to hand out, and which of them are in use.
-///
-/// The pool holds one logical CPU per physical core. Two logical CPUs on one
-/// physical core are not two cores — they share the execution units, so a
-/// command given both would get somewhere around 1.3 cores' worth of work done
-/// while the table claimed it had 2. Only the first of each sibling group is
-/// ever handed out and the rest sit idle, which is why a 32-CPU machine with
-/// hyperthreading has 24 of these rather than 32.
+/// The cores a pipeline has to hand out, one logical CPU per physical core,
+/// and which of them are in use.
 #[derive(Debug, Default)]
 pub(crate) struct Cores {
     pool: Vec<Cpu>,
-    /// The cpus currently leased out, and something to wait on for one to come
-    /// back. A command that cannot be placed yet sleeps here rather than
-    /// spinning, which would burn a core to wait for a core.
+    /// The cpus currently leased out.
     taken: Mutex<Vec<usize>>,
+
+    /// What a command that cannot be placed yet waits on.
     freed: Condvar,
 
     /// Which node a request comes off when more than one could hold it.
@@ -62,9 +54,9 @@ pub(crate) struct Cores {
     /// Whether the cpus this process may run on cover more than one memory
     /// node.
     //
-    // read off the whole pool once and handed down to every
+    // read off the whole pool once and copied into every
     // carve: a pool carved onto one node of a two node machine
-    // still wants its node named and its policy set
+    // still names its node and sets its policy
     pub(crate) numa: bool,
 
     /// Whether this is a pool carved for a pipeline or a step, which a command
@@ -72,11 +64,8 @@ pub(crate) struct Cores {
     pub(crate) pooled: bool,
 }
 
-/// Cores held for as long as one command needs them.
-///
-/// Handing them back is [`Drop`]'s job rather than the caller's, so a command
-/// that failed to spawn, timed out, or panicked releases its cores the same way
-/// one that finished does.
+/// Cores held for as long as one command needs them, handed back on drop so a
+/// command that failed to spawn, timed out or panicked releases them too.
 pub(crate) struct Lease<'a> {
     cores: &'a Cores,
     cpus: Vec<usize>,
@@ -96,6 +85,10 @@ impl Cores {
         let mut pool = Vec::new();
         let mut spoken_for = Vec::new();
 
+        // only the first cpu of each sibling group joins the pool:
+        // two logical cpus on one physical core share its
+        // execution units, and a command given both would get
+        // less than two cores of work while the table said 2
         for cpu in allowed() {
             if spoken_for.contains(&cpu) {
                 continue;
@@ -119,8 +112,7 @@ impl Cores {
         }
     }
 
-    /// A pool of exactly these cpus, all on one node, so the handing-out can be
-    /// exercised without depending on what the machine happens to have.
+    /// A pool of exactly these cpus, all on node 0.
     #[cfg(test)]
     pub(crate) fn with_pool(pool: Vec<usize>) -> Cores {
         let pool = pool.into_iter().map(|id| (id, 0)).collect::<Vec<_>>();
@@ -179,10 +171,8 @@ impl Cores {
 
     /// Take `size` cores, waiting for them if they are not free yet.
     ///
-    /// `None` for a command that asked for none, and for one that gave up
-    /// waiting because the run is stopping — neither is going to be pinned.
-    /// A request larger than the whole machine would wait forever, which is why
-    /// the pipeline refuses to build one.
+    /// `None` for a request of zero or of more than the pool holds, and once
+    /// `abandon` returns true while waiting.
     pub(crate) fn acquire(&self, size: usize, abandon: &dyn Fn() -> bool) -> Option<Lease<'_>> {
         if size == 0 || size > self.pool.len() {
             return None;
@@ -218,6 +208,9 @@ impl Cores {
             return None;
         }
 
+        // the best arrangement free now, even across nodes: one
+        // node is worth choosing but not worth holding a
+        // command back for
         let placed = place(&free, size, self.placement);
 
         // lowest first, so a run with the machine to itself
@@ -275,11 +268,6 @@ fn spans_nodes(pool: &[Cpu]) -> bool {
 
 /// The `size` cpus to hand out, off one memory node wherever one of them has
 /// that many free.
-///
-/// Cores on one node reach their memory without crossing the interconnect. That
-/// is worth choosing but not worth queueing for, so this takes the best
-/// arrangement free at the moment the request can be met, and never holds a
-/// command back waiting for a better one.
 fn place(free: &[Cpu], size: usize, placement: Placement) -> Vec<Cpu> {
     let mut nodes = nodewise(free);
     if placement == Placement::Spread {
@@ -334,13 +322,11 @@ fn locate(cpus: &[usize], nodes: &BTreeMap<usize, usize>) -> Vec<Cpu> {
 }
 
 /// Which memory node each cpu belongs to.
-///
-/// A kernel built without NUMA has no `node` directory to read, and every cpu
-/// comes back missing from this and placed on node 0, which is the whole of the
-/// truth on such a machine.
 fn nodes() -> BTreeMap<usize, usize> {
     let mut out = BTreeMap::new();
 
+    // a kernel built without NUMA has no node directory, and
+    // locate then puts every cpu on node 0
     let Ok(dir) = std::fs::read_dir("/sys/devices/system/node") else {
         return out;
     };
@@ -397,6 +383,9 @@ pub(crate) fn pin_thread(cpus: &[usize]) -> Option<Pinned> {
         return None;
     }
     let size = size_of::<libc::cpu_set_t>();
+
+    // SAFETY: cpu_set_t is a plain bit array, and all zeroes
+    // is the empty set
     let mut was: libc::cpu_set_t = unsafe { std::mem::zeroed() };
 
     // SAFETY: both sets are cpu_set_t of the size passed, and pid 0 is the
@@ -427,38 +416,32 @@ impl Drop for Pinned {
     }
 }
 
-/// The affinity mask for `cpus`, built while there is still a whole program to
-/// build it in. What installs it runs after the fork, where about the only
-/// thing left that is safe to do is make one syscall.
-///
-/// A cpu at or past `CPU_SETSIZE` would write outside the set, so it is dropped
-/// rather than trusted. `allowed` cannot produce one, and this is what keeps
-/// that true if a pool ever comes from somewhere else.
+/// The affinity mask for `cpus`, built before the fork: what installs it runs
+/// after, where only async-signal-safe calls are allowed.
 #[cfg(target_os = "linux")]
 pub(crate) fn mask(cpus: &[usize]) -> libc::cpu_set_t {
+    // SAFETY: cpu_set_t is a plain bit array, and all zeroes
+    // is the empty set
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+
+    // a cpu at or past CPU_SETSIZE would write outside the
+    // set. allowed cannot produce one, a pool from elsewhere
+    // could
     for cpu in cpus.iter().filter(|cpu| **cpu < libc::CPU_SETSIZE as usize) {
+        // SAFETY: the filter keeps cpu inside the set
         unsafe { libc::CPU_SET(*cpu, &mut set) };
     }
     set
 }
 
-/// The node mask for `nodes`, and the `maxnode` to pass `set_mempolicy` with it.
-///
-/// Built out here for the reason the cpu mask is: what installs it runs after
-/// the fork.
+/// The node mask for `nodes`, and the `maxnode` to pass `set_mempolicy` with it,
+/// built before the fork as [`mask`] is.
 #[cfg(target_os = "linux")]
 pub(crate) fn nodemask(nodes: &[usize]) -> (Vec<libc::c_ulong>, usize) {
     let Some(highest) = nodes.iter().copied().max() else {
         return (Vec::new(), 0);
     };
 
-    // **note: the kernel decrements maxnode before reading the
-    //         mask (get_nodes in mm/mempolicy.c), so it reads
-    //         maxnode - 1 bits. highest + 1 drops the top node's
-    //         bit, and a lone node then reads as an empty mask:
-    //         EINVAL for bind, a silent MPOL_LOCAL for preferred.
-    //         libnuma passes one extra for the same reason
     let word = libc::c_ulong::BITS as usize;
     let read = highest + 1;
     let mut mask = vec![0 as libc::c_ulong; read.div_ceil(word)];
@@ -467,6 +450,11 @@ pub(crate) fn nodemask(nodes: &[usize]) -> (Vec<libc::c_ulong>, usize) {
         mask[node / word] |= 1 << (node % word);
     }
 
+    // **note: the kernel decrements maxnode before reading the
+    //         mask (get_nodes in mm/mempolicy.c), so it reads
+    //         maxnode - 1 bits. highest + 1 drops the top node's
+    //         bit, and a lone node then reads as an empty mask:
+    //         EINVAL for bind, a silent MPOL_LOCAL for preferred
     (mask, read + 1)
 }
 
@@ -504,46 +492,46 @@ pub(crate) fn list(cpus: &[usize]) -> String {
 
 /// How wide the list for `cores` cpus comes out if they are low-numbered and
 /// evenly spaced: `0`, `0,2`, and a run such as `0-10:2` from three on.
-///
-/// Room to reserve before anything has run and we know which cpus they are.
-/// The low guess on purpose — a higher cpu or a ragged list grows the column
-/// past this, and nothing is reserved for a width most runs will not use.
 pub(crate) fn list_width(cores: usize) -> usize {
     match cores {
         0 => 0,
         1 => 1,
         2 => 3,
+
+        // the low guess: a higher cpu or a ragged list widens
+        // the column past this once the cpus are known
         _ => "0-10:2".len(),
     }
 }
 
-/// The CPUs this process may run on, which is not the same as every CPU the
-/// machine has — a benchmark started under `taskset` gets a smaller set, and
-/// handing out anything outside it would pin commands nowhere.
+/// The CPUs this process may run on, fewer than the machine has under `taskset`
+/// or a cpuset.
 #[cfg(target_os = "linux")]
 fn allowed() -> Vec<usize> {
+    // SAFETY: cpu_set_t is a plain bit array, all zeroes is
+    // the empty set, and sched_getaffinity writes at most the
+    // size passed into it
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut set) };
     if rc != 0 {
         return Vec::new();
     }
 
+    // SAFETY: every cpu in the range is inside the set
     (0..libc::CPU_SETSIZE as usize)
         .filter(|cpu| unsafe { libc::CPU_ISSET(*cpu, &set) })
         .collect()
 }
 
-/// Every CPU the machine has. There is no `taskset` here to ask for a
-/// smaller set, so this is the honest answer rather than an approximation.
+/// Every CPU the machine has, since there is no affinity to read here.
 #[cfg(not(target_os = "linux"))]
 fn allowed() -> Vec<usize> {
     let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
     (0..cpus).collect()
 }
 
-/// Every logical CPU sharing a physical core with this one, itself included.
-/// A CPU whose topology we cannot read is treated as a core of its own, which
-/// is the reading that under-promises.
+/// Every logical CPU sharing a physical core with this one, itself included, or
+/// only this one where its topology cannot be read.
 fn siblings(cpu: usize) -> Vec<usize> {
     let path = format!("/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list");
     match std::fs::read_to_string(path) {
@@ -607,7 +595,7 @@ mod tests {
         assert_eq!(parse_list("0-1"), vec![0, 1]);
         assert_eq!(parse_list("0-3,8-11"), vec![0, 1, 2, 3, 8, 9, 10, 11]);
         assert_eq!(parse_list("0,4,8"), vec![0, 4, 8]);
-        // sysfs files come with one
+        // sysfs files end in a newline
         assert_eq!(parse_list("2-3\n"), vec![2, 3]);
     }
 
@@ -816,7 +804,7 @@ mod tests {
     fn asking_for_none_gets_none() {
         let cores = Cores::with_pool(vec![0, 2]);
         assert!(cores.acquire(0, &|| false).is_none());
-        // and it did not quietly take anything on the way past
+        // and took nothing
         assert_eq!(
             cores.try_acquire(2).map(|l| l.cpus().to_vec()),
             Some(vec![0, 2])
@@ -827,12 +815,9 @@ mod tests {
     fn a_wait_can_be_abandoned() {
         let cores = Cores::with_pool(vec![0, 2]);
         let _all = cores.acquire(2, &|| false).expect("the whole pool");
-        // nothing is free, and the predicate says do not wait for it
         assert!(cores.acquire(1, &|| true).is_none());
     }
 
-    /// Note: if the wake ever breaks, this hangs rather than failing — there is
-    /// no timeout on the inner wait to bound it with.
     #[test]
     fn a_waiting_thread_gets_the_cores_when_they_come_back() {
         let cores = Cores::with_pool(vec![0, 2, 4, 6]);
@@ -840,9 +825,13 @@ mod tests {
 
         std::thread::scope(|scope| {
             let waiting = scope.spawn(|| cores.acquire(2, &|| false).map(|l| l.cpus().to_vec()));
-            // long enough that the other thread is parked rather than racing us
+            // long enough for the other thread to be waiting
+            // before the drop
             std::thread::sleep(Duration::from_millis(50));
             drop(all);
+
+            // note: if the wake breaks, this hangs rather than
+            //       fails, since the wait has no timeout
             assert_eq!(waiting.join().unwrap(), Some(vec![0, 2]));
         });
     }
@@ -851,6 +840,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn a_mask_holds_exactly_the_cpus_it_was_given() {
         let set = mask(&[0, 2]);
+        // SAFETY: cpus 0 to 7 are inside the set
         let held: Vec<usize> = (0..8)
             .filter(|cpu| unsafe { libc::CPU_ISSET(*cpu, &set) })
             .collect();

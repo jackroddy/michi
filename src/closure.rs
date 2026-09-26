@@ -6,23 +6,22 @@ use crate::cmd::Value;
 use crate::error::BoxError;
 use crate::execute::Status;
 
-/// `Send` because the pipeline moves a [`Step`](crate::Step) into a scoped
-/// thread to run a batch, so everything a step holds has to be `Send`, even
-/// though a closure only ever runs on the thread that reached it. `FnOnce`, so
-/// values can be moved in and back out.
+/// The body of a closure step.
+//
+// `Send` because the pipeline moves a step into a scoped
+// thread to run a batch, so everything a step holds has to
+// be `Send`, though a closure only runs on the thread that
+// reached it. `FnOnce`, so values can be moved in and out
 pub(crate) type Call<'a> = Box<dyn FnOnce() -> Result<(), BoxError> + Send + 'a>;
 
-/// Rust to run in place of a command.
-///
-/// Only its wall clock is measured. A thread has no `wait4` to ask, so there is
-/// no cpu time and no peak memory, and a closure takes neither a timeout nor a
-/// core count — a thread can be neither killed on a deadline nor pinned.
+/// Rust to run in place of a command. Only its wall clock is measured, and it
+/// takes neither a timeout nor a core count.
 pub struct Closure<'a> {
     pub(crate) name: String,
     pub(crate) fields: BTreeMap<String, String>,
     pub(crate) tags: BTreeSet<String>,
     pub(crate) status: Status,
-    /// `None` once it has been run, which is the only time it can be.
+    /// The body, `None` once it has run.
     pub(crate) f: Option<Call<'a>>,
 }
 
@@ -36,8 +35,7 @@ impl std::fmt::Debug for Closure<'_> {
 }
 
 impl<'a> Closure<'a> {
-    /// The name is not optional the way a command's is: there is no program
-    /// behind it to fall back on.
+    /// A closure named `name` that runs `f`.
     ///
     /// `f` returns a boxed [`std::error::Error`], so `?` works on any std error
     /// or on an `anyhow::Error`, and `Err("why".into())` gives a plain message.

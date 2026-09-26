@@ -15,9 +15,6 @@ pub enum Output {
 }
 
 /// Something that can stand in as the value of an option.
-///
-/// There is no blanket impl over Display, so paths get their own and come out
-/// without the quotes a Debug print would add.
 pub trait Value {
     fn render(self) -> String;
 }
@@ -63,6 +60,8 @@ macro_rules! value_via_path {
     };
 }
 
+// Path has no Display impl, and a Debug print would
+// wrap it in quotes
 value_via_path!(&Path, PathBuf, &PathBuf);
 
 /// An option: a flag on its own, or a flag with a value after it.
@@ -92,9 +91,6 @@ impl Level {
 }
 
 /// Where a command's pages come from, once its cores sit on a memory node.
-///
-/// Only [`Bound`](Memory::Bound) can fail a command that would otherwise have
-/// run: a node that fills has no fallback under it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Memory {
     /// Prefer the node the cores are on, and spill onto another when it fills.
@@ -112,13 +108,6 @@ pub enum Memory {
 }
 
 /// A command, built but not run.
-///
-/// `Cmd` keeps the pieces apart rather than in one argv so that an option added
-/// after a positional still comes out in front of it. Several of these tools
-/// take their query and target as trailing positionals, and an option tacked on
-/// after them would be read as another file. `sub` is the one call whose
-/// position matters: it starts a new level, and the options and paths after it
-/// go on that one.
 #[derive(Clone, Debug)]
 pub struct Cmd {
     pub(crate) name: Option<String>,
@@ -155,6 +144,12 @@ pub struct Cmd {
     /// The program's own level, then one per subcommand.
     //
     // never empty: new pushes the program's level
+    //
+    // kept apart rather than as one argv so an option added
+    // after a positional still comes out in front of it.
+    // several tools take their query and target as trailing
+    // positionals and would read a trailing option as
+    // another file
     pub(crate) levels: Vec<Level>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) dir: Option<PathBuf>,
@@ -195,16 +190,15 @@ impl Cmd {
         self
     }
 
-    /// Pin this command to `cores` physical cores, whichever ones are going.
+    /// Pin this command to `cores` physical cores, whichever are free.
     /// Overrides whatever its step asked for.
     pub fn cores(mut self, cores: usize) -> Self {
         self.cores = Some(cores);
         self
     }
 
-    /// A subcommand, like the `search` in `mmseqs search`. Call it more than
-    /// once for tools that nest them. Options and paths added after it go with
-    /// that subcommand rather than with the program.
+    /// A subcommand, like the `search` in `mmseqs search`, which may nest.
+    /// Options and paths added after it go on that subcommand.
     #[expect(
         clippy::should_implement_trait,
         reason = "a subcommand, not subtraction"
@@ -300,10 +294,8 @@ impl Cmd {
         self
     }
 
-    /// What to call this command in a table or on the progress line: its name if
-    /// it was given one, and otherwise the program it runs, with the path in
-    /// front of it dropped. Not unique — the argv column is what tells two
-    /// `mkdir`s apart.
+    /// The command's name, or failing that its program's file name. Not
+    /// unique.
     pub fn label(&self) -> String {
         match &self.name {
             Some(name) => name.clone(),
@@ -353,16 +345,7 @@ impl Cmd {
         out
     }
 
-    /// The command as a shell line.
-    ///
-    /// A working directory becomes a subshell, so running it leaves your own
-    /// shell where it was. The redirects sit outside it, because the files are
-    /// opened before the child moves anywhere, so a relative one lands in the
-    /// same place either way.
-    ///
-    /// Pinning is not in here. The child sets its own affinity rather than
-    /// being wrapped in something that sets it, so there is nothing on the
-    /// command line to write down; the cpus column says where it ran instead.
+    /// The command as a shell line, without its pinning.
     pub fn line(&self) -> String {
         let mut parts: Vec<String> = self
             .env
@@ -375,6 +358,10 @@ impl Cmd {
 
         let mut line = parts.join(" ");
 
+        // a subshell, so pasting the line leaves the user's
+        // shell where it was. the redirects go outside it:
+        // the files are opened before the child changes
+        // directory, so a relative one lands in the same place
         if let Some(dir) = &self.dir {
             line = format!("(cd {} && {line})", quote(&dir.display().to_string()));
         }
@@ -395,7 +382,8 @@ fn redirect(out: &Output, fd: &str) -> Option<String> {
     let (op, path) = match out {
         Output::Inherit => return None,
         Output::Null => (">", "/dev/null".to_string()),
-        // OnFailure still writes to the file, it just may not survive the run
+        // OnFailure writes the file too, and report may delete
+        // it after the run
         Output::File(p) | Output::OnFailure(p) => (">", quote(&p.display().to_string())),
         Output::Append(p) => (">>", quote(&p.display().to_string())),
     };
@@ -456,8 +444,8 @@ mod tests {
 
     #[test]
     fn positionals_come_last_however_they_were_added() {
-        // the whole reason a Cmd keeps its pieces apart: several of these tools
-        // read a trailing option as another input file
+        // several tools read a trailing option as another
+        // input file
         let cmd = Cmd::new("/bin/mmseqs")
             .sub("search")
             .path("query.fa")
@@ -533,8 +521,6 @@ mod tests {
 
     #[test]
     fn a_working_directory_becomes_a_subshell_with_the_redirects_outside_it() {
-        // the files are opened before the child moves anywhere, so a relative
-        // redirect lands in the same place whether or not you paste the cd
         let line = Cmd::new("/usr/bin/wc")
             .flag("-l")
             .path("data.txt")
@@ -554,7 +540,6 @@ mod tests {
         assert_eq!(base().stdout(Output::Inherit).line(), "/x");
         assert_eq!(base().stdout_to("o").line(), "/x > o");
         assert_eq!(base().stdout(Output::Append("o".into())).line(), "/x >> o");
-        // OnFailure still writes to the file, it just may not survive the run
         assert_eq!(
             base().stdout(Output::OnFailure("o".into())).line(),
             "/x > o"

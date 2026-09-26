@@ -20,9 +20,9 @@ pub enum Error {
         within: Within,
     },
 
-    /// A pool asks for none, or for more cores than it is carved from. `step`
-    /// is `None` for the pipeline's own pool.
+    /// A pool asks for none, or for more cores than it is carved from.
     Pool {
+        /// The step, `None` for the pipeline's own pool.
         step: Option<String>,
         size: usize,
         room: usize,
@@ -38,8 +38,12 @@ pub enum Error {
     /// A sink returned an error, which stops the run.
     Sink(BoxError),
 
-    /// A step failed and ended the run. `why` names what failed in it.
-    Step { step: String, why: String },
+    /// A step failed and ended the run.
+    Step {
+        step: String,
+        /// What failed in it.
+        why: String,
+    },
 }
 
 /// What a command's cores or a pool are carved from.
@@ -90,7 +94,6 @@ impl fmt::Display for Error {
                 "the pipeline's pool wants {size} cores, and {within} has {room}"
             ),
             Error::Io { path, .. } => write!(f, "cannot write {}", path.display()),
-            // transparent: the sink's own words are the whole story
             Error::Sink(e) => e.fmt(f),
             Error::Step { why, .. } => f.write_str(why),
         }
@@ -107,8 +110,7 @@ impl std::error::Error for Error {
     }
 }
 
-/// An error and everything under it, the way `{:#}` prints an `anyhow::Error`:
-/// `outer: inner: innermost`.
+/// An error and its sources, joined as `outer: inner: innermost`.
 pub(crate) fn chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut out = error.to_string();
     let mut next = error.source();

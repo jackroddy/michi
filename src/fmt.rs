@@ -1,7 +1,7 @@
 //! Peak memory the way the table and the progress lines both write it.
 
-/// Peak memory in binary units, to about three significant figures so the column
-/// reads at a glance: 940KiB, 10.4MiB, 1.02GiB.
+/// Peak memory in binary units, to about three significant figures: 940KiB,
+/// 10.4MiB, 1.02GiB.
 pub(crate) fn bytes(kib: i64) -> String {
     const STEP: f64 = 1024.0;
     let (value, unit) = match kib as f64 {
@@ -43,9 +43,9 @@ mod tests {
 
     #[test]
     fn bytes_rounds_up_into_an_extra_figure_just_below_a_switch() {
-        // 99.98MiB is under the cutoff, so it takes the one-decimal branch and
-        // rounds to a four-figure "100.0MiB". a character wider than the rest of
-        // the column, and the only place this happens
+        // 99.98MiB is under the cutoff, so it takes the
+        // one-decimal branch and rounds to a four-figure
+        // "100.0MiB", a character wider than "100MiB"
         assert_eq!(bytes(99 * 1024 + 1013), "100.0MiB");
     }
 }

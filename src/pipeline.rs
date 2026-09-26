@@ -74,9 +74,8 @@ impl<'a> PipelineBuilder<'a> {
     /// Carve `cores` physical cores for the whole run, and run every step
     /// inside them.
     ///
-    /// A command that asks for no cores of its own runs across the whole pool,
-    /// or its step's if the step carved one, and the scheduler moves it
-    /// wherever a core is idle. Closures are pinned to it too.
+    /// A command with no cores of its own may run on any core of this pool, or
+    /// of its step's pool if it has one. Closures are pinned to the pool too.
     pub fn pool(mut self, cores: usize) -> Self {
         self.pool = Some(cores);
         self
@@ -154,8 +153,8 @@ impl<'a> PipelineBuilder<'a> {
             for (c, cmd) in cmds.iter_mut().enumerate() {
                 let c_idx = c + 1;
 
-                // if we have a stderr dir, we redirect every un-routed stderr
-                // to its own file just in case the command ends up failing
+                // every unrouted stderr gets a file of its own, in
+                // case the command fails
                 if let Some(dir) = &maybe_dir
                     && cmd.stderr == Output::Null
                 {
@@ -248,8 +247,6 @@ impl Pipeline<'_> {
                 let lease = cores.try_acquire(cmd.cores.unwrap_or(0));
                 let cpus = lease.as_ref().map(|l| l.cpus()).unwrap_or_default();
                 let nodes = lease.as_ref().map(|l| l.nodes()).unwrap_or_default();
-                // the pinning is no longer part of the command, so it gets said
-                // beside it rather than shown in it
                 let pin = match (cpus, nodes) {
                     // asked for cores the others in its step still hold
                     ([], _) if cmd.cores.unwrap_or(0) > 0 => " [waits for cores]".to_string(),
@@ -269,7 +266,6 @@ impl Pipeline<'_> {
             }
 
             for closure in step.closures() {
-                // no line to paste, so its name is all there is to show
                 println!("{}", closure.label());
             }
         }
@@ -308,7 +304,6 @@ impl Pipeline<'_> {
         let failure = outcome?;
         finished?;
 
-        // last, so everything above has already happened
         match failure {
             Some((step, why)) => Err(Error::Step { step, why }),
             None => Ok(()),
@@ -393,10 +388,7 @@ impl Pipeline<'_> {
         Ok(())
     }
 
-    /// One closure at a time, stopping early if the step says to.
-    ///
-    /// Always serial: a closure runs on the thread that reached it, and nothing
-    /// here spawns another.
+    /// One closure at a time on this thread, stopping early if the step says to.
     fn closures(&mut self, step: &mut Step<'_>) -> Result<(), Error> {
         let start = Instant::now();
 
@@ -420,23 +412,14 @@ impl Pipeline<'_> {
         Ok(())
     }
 
-    /// `jobs` at a time. Workers take the next command whenever they are free, so
-    /// one slow command does not idle the rest.
-    ///
-    /// A step that has failed and is set to stop does not wait for the rest of
-    /// the batch to finish: nothing new is taken, and what is already running is
-    /// killed. Those come back as `exit 143`, which is a real failure and reads
-    /// as one, so a step that stopped shows the one command that broke it and the
-    /// ones it took down with it.
+    /// `jobs` at a time, each worker taking the next command when it is free.
     fn batch(&mut self, step: &mut Step<'_>, jobs: usize) -> Result<(), Error> {
-        /// What a worker has to say about the command it claimed. Both go back
-        /// over the one channel, so the main thread stays the only place that
-        /// talks to a sink.
-        ///
-        /// The command is boxed because a `Started` carries nothing, and every
-        /// message on the channel would otherwise be as big as the largest.
+        /// What a worker reports about the command it claimed.
         enum Event {
             Started,
+
+            // boxed because a `Started` carries nothing, and every
+            // message would otherwise be as big as the largest
             Done(Box<Cmd>),
         }
 
@@ -475,7 +458,8 @@ impl Pipeline<'_> {
                         batch.execute(&mut cmd, || {
                             let _ = tx.send((k, Event::Started));
                         });
-                        // a closed channel means the main thread gave up on us
+                        // the send fails once the main thread has
+                        // stopped receiving
                         if tx.send((k, Event::Done(Box::new(cmd)))).is_err() {
                             break;
                         }
@@ -488,12 +472,11 @@ impl Pipeline<'_> {
             // the workers themselves, so sinks stay single-threaded and the
             // table keeps up during a long batch
             for (k, event) in rx {
-                // giving up on the run is not a reason to leave a batch of
-                // searches running behind us, so a sink that could not write
-                // cancels before it propagates
+                // a sink error cancels the batch before it propagates,
+                // so no command is left running after the run ends
                 let told = match event {
-                    // the copy still sitting in the step has not run, which is
-                    // all a start has to say: its name, its fields, its tags
+                    // the copy in the step has not run, but it holds
+                    // everything a start reports: name, fields, tags
                     Event::Started => {
                         sinks.each(|s| s.item_start(step, k, Item::Cmd(&step.cmds()[k])))
                     }
@@ -520,6 +503,10 @@ impl Pipeline<'_> {
                     return Err(e);
                 }
 
+                // a stopping step takes nothing new and kills what
+                // is running. those come back as exit 143, a real
+                // failure, so the step shows the command that broke
+                // it and the ones killed because of it
                 if step.skips() {
                     batch.cancel(scope);
                 }
@@ -917,8 +904,6 @@ mod tests {
 
     #[test]
     fn every_command_is_announced_exactly_once_and_never_as_not_run() {
-        // the contract Sink promises: by the time you see a command it has
-        // finished, failed to start, or been skipped
         let recorder = Recorder::default();
         let log = Arc::clone(&recorder.log);
 
@@ -972,10 +957,9 @@ mod tests {
 
     #[test]
     fn a_command_the_batch_gave_up_on_before_starting_it_is_announced_once() {
-        // the awkward case for the contract: a worker takes a command, parks
-        // waiting for cores that the hog is holding, and is woken by the cancel.
-        // it comes back never having run, and both the batch and skip_rest have
-        // an opinion about saying so
+        // a worker takes `waiter`, blocks on the cores `hog` holds,
+        // and wakes on the cancel with it never having run. both
+        // the batch and skip_rest could announce it
         let whole_machine = Cores::read().len();
         let recorder = Recorder::default();
         let log = Arc::clone(&recorder.log);
@@ -1091,8 +1075,8 @@ mod tests {
         assert!(matches!(log.of("later")[..], [Status::Finished(_)]));
     }
 
-    /// This one prints a panic backtrace notice while it runs. That is the point
-    /// of it: the default hook still fires, and the run carries on regardless.
+    /// Prints a panic notice while it runs: the default hook still fires, and
+    /// the run carries on.
     #[test]
     fn a_panicking_closure_fails_only_itself() {
         let recorder = Recorder::default();
@@ -1145,7 +1129,7 @@ mod tests {
         match log.of("sleeps")[..] {
             [Status::Finished(t)] => {
                 assert!(t.wall_s >= 0.03, "wall clock too short: {t:?}");
-                // the whole contract: a thread has no wait4 to ask for these
+                // a thread has no wait4 to report these
                 assert_eq!(t.user_s, None, "{t:?}");
                 assert_eq!(t.sys_s, None, "{t:?}");
                 assert_eq!(t.max_rss_kb, None, "{t:?}");
@@ -1219,15 +1203,14 @@ mod tests {
             .unwrap_err();
 
         let log = log.lock().unwrap();
-        // exactly once each, and never as NotRun, which is what a sink is promised
+        // exactly once each, and never as NotRun
         assert!(matches!(log.of("sibling")[..], [Status::Skipped]));
         assert!(matches!(log.of("unreached")[..], [Status::Skipped]));
         assert_eq!(log.records.len(), 3, "{:?}", log.records);
     }
 }
 
-/// Every sink registered on a pipeline, so the rest of this file can talk to
-/// them as if there were one.
+/// Every sink registered on a pipeline, called as one.
 #[derive(Default)]
 struct Sinks(Vec<Box<dyn Sink>>);
 

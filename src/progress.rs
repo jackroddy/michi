@@ -2,13 +2,12 @@
 //!
 //! By default this keeps a block at the bottom of the terminal showing the step
 //! that is going, what is running inside it and for how long, with the finished
-//! lines scrolling above it in color. Turn the parts off and it becomes a plain
-//! line per result, which is what a log wants.
+//! lines scrolling above it in color. Turn the parts off and it prints a plain
+//! line per result, for a log.
 //!
-//! The spinning is done by a thread of its own: [`Sink`] has no tick, and it
-//! should not — a tick carries no information. What the trait does give it is
-//! [`item_start`](Sink::item_start), and knowing when something *began* is
-//! enough to animate the rest without the pipeline calling in.
+//! The spinner runs on a thread of its own, since [`Sink`] has no tick.
+//! [`item_start`](Sink::item_start) gives the time each item began, which is
+//! enough to draw elapsed times without the pipeline calling in.
 //!
 //! This writes to stdout unless told otherwise: it is what the run produced,
 //! not a note about it.
@@ -25,16 +24,22 @@ use crate::item::Item;
 use crate::sink::Sink;
 use crate::step::Step;
 
-/// How often the live block is redrawn. Fast enough to look like it is moving,
-/// slow enough that a run pinned to every core does not notice.
+/// How often the live block is redrawn.
+//
+// fast enough to look animated, slow enough to take little
+// from a run using every core
 const FRAME: Duration = Duration::from_millis(80);
 
-/// How many running items to name before summing up the rest. A batch fifty
-/// wide would otherwise push everything else off the screen.
+/// How many running items to name before summing up the rest.
+//
+// a batch fifty wide would otherwise push everything else
+// off the screen
 const SHOWN: usize = 8;
 
-/// Names are cut to this so a live line cannot wrap. A wrapped line takes up
-/// two rows and the erase would leave half of it behind.
+/// The length names are cut to, so a live line cannot wrap.
+//
+// a wrapped line takes two rows, and the erase would leave
+// half of it behind
 const NAME: usize = 32;
 
 /// Erase the whole line and put the cursor back at the start of it.
@@ -67,10 +72,9 @@ pub enum Marks {
     /// `✓ ✗ ! ·`, and braille for the spinner.
     #[default]
     Unicode,
-    /// `+ x ! -`, for a terminal that would make a mess of the above.
+    /// `+ x ! -`, for a terminal that cannot show the above.
     Ascii,
-    /// No mark at all. The verdict moves to the end of the line as a word, so
-    /// that something still says a command worked.
+    /// No mark at all. The verdict goes at the end of the line as a word.
     None,
 }
 
@@ -101,8 +105,10 @@ pub struct Progress {
     /// Held so the run can join it. `None` before the run starts and after it
     /// has been waited for.
     spinning: Option<JoinHandle<()>>,
-    /// What was asked for. Turned into plain yes-or-no in `start`, which is the
-    /// first point at which the stream is known to be worth asking about.
+    /// The settings as given.
+    //
+    // resolved to yes or no in `start`, the first point at which
+    // the stream is settled
     asked: Asked,
 }
 
@@ -116,13 +122,15 @@ struct Asked {
 
 struct Shared {
     state: Mutex<State>,
-    /// Woken when the run is over, so the spinning thread stops at once rather
-    /// than after one more frame of sleeping.
+    /// Notified when the run is over.
+    //
+    // the spinning thread waits on it, so it stops at once rather
+    // than after one more frame
     changed: Condvar,
 }
 
-/// What one step looks like before it has run: enough to draw a live line for
-/// it without waiting for its first result.
+/// A step as known before it runs: enough to draw its live line before its
+/// first result.
 struct Planned {
     label: String,
     items: usize,
@@ -130,8 +138,7 @@ struct Planned {
 
 /// Something that has begun and not yet reported.
 struct Running {
-    /// Its place in the step, which is what tells it apart from another with
-    /// the same name — two unnamed commands running one program share one.
+    /// Its position in the step, unique where its name may not be.
     at: usize,
     name: String,
     since: Instant,
@@ -139,10 +146,12 @@ struct Running {
 
 struct State {
     steps: Vec<Planned>,
-    /// Which step is going. Set by `step_start` rather than counted off by
-    /// `step_done`, so the label and the count below it always belong to the
-    /// same step — advancing on the way out would leave the next step's name
-    /// above the last one's tally until it started.
+    /// The step being shown.
+    //
+    // set by `step_start` rather than advanced by `step_done`, so
+    // the label and the count below it belong to the same step:
+    // advancing on the way out would show the next step's name
+    // above the last one's tally until it started
     at: usize,
     /// How many steps have started, which is where the next one goes.
     started: usize,
@@ -214,15 +223,15 @@ impl Progress {
         self
     }
 
-    /// Color is turned off by `NO_COLOR` or `TERM=dumb` whatever this says:
-    /// asking for it in code is not a reason to override the reader.
+    /// When to color the output. `NO_COLOR` or `TERM=dumb` turns it off
+    /// regardless.
     pub fn color(mut self, when: When) -> Self {
         self.asked.color = when;
         self
     }
 
     /// Whether to keep rewriting a block at the bottom of the screen. Off means
-    /// one line per result and no spinner, which is what a redirected log wants.
+    /// one line per result and no spinner, for a redirected log.
     pub fn rewrite(mut self, when: When) -> Self {
         self.asked.rewrite = when;
         self
@@ -253,6 +262,8 @@ impl Sink for Progress {
             Stream::Stdout => std::io::stdout().is_terminal(),
             Stream::Stderr => std::io::stderr().is_terminal(),
         };
+        // these turn color off whatever `color` says: asking for
+        // it in code is not a reason to overrule the reader
         let plain = std::env::var_os("NO_COLOR").is_some()
             || std::env::var_os("TERM").is_some_and(|term| term == "dumb");
 
@@ -283,9 +294,8 @@ impl Sink for Progress {
         let rewrite = state.rewrite;
         drop(state);
 
-        // the pipeline never calls in to say time has passed, so the spinning
-        // has to come from somewhere else. nothing to spin where nothing is
-        // being rewritten, so nothing to run either
+        // the pipeline sends no ticks, so a thread redraws the
+        // spinner. without rewriting there is nothing to redraw
         if rewrite {
             let shared = Arc::clone(&self.shared);
             self.spinning = Some(std::thread::spawn(move || spin(&shared)));
@@ -363,8 +373,8 @@ impl Sink for Progress {
 
     fn step_done(&mut self, _step: &Step<'_>) -> Result<(), BoxError> {
         let mut state = self.shared.state.lock().unwrap();
-        // `at` stays put: until the next step starts, the step that just ended
-        // is still the one worth showing, sitting at its full count
+        // `at` stays put: until the next step starts, the step that
+        // just ended is still the one shown, at its full count
         state.running.clear();
         state.draw();
         Ok(())
@@ -519,19 +529,19 @@ impl State {
         self.put(&text);
     }
 
-    /// Flushed rather than left to the buffer, because a stream that is not a
-    /// terminal holds its output back in blocks, and a benchmark that runs for
-    /// an hour is worth being able to watch through a pipe.
+    /// Write `text` to the stream and flush it.
     fn put(&self, text: &str) {
         let mut out: Box<dyn Write> = match self.stream {
             Stream::Stdout => Box::new(std::io::stdout().lock()),
             Stream::Stderr => Box::new(std::io::stderr().lock()),
         };
         let _ = out.write_all(text.as_bytes());
+        // a stream that is not a terminal is block buffered, and
+        // an hour-long run should be watchable through a pipe
         let _ = out.flush();
     }
 
-    /// Wind back over however many rows the block last took, clearing each.
+    /// Move up over the rows the block last took, clearing each.
     fn erase_into(&mut self, text: &mut String) {
         if !self.rewrite {
             return;
@@ -552,8 +562,8 @@ impl State {
         self.drawn = lines.len();
     }
 
-    /// The block that keeps being rewritten: the step that is going, then a
-    /// line for each thing running inside it.
+    /// The live block: the current step, then a line for each item running in
+    /// it.
     fn live(&self) -> Vec<String> {
         let Some(step) = self.steps.get(self.at) else {
             return Vec::new();
@@ -598,7 +608,7 @@ impl State {
         lines
     }
 
-    /// One finished thing, how it went, and which memory node it went there on.
+    /// The line for one finished item: its result and the nodes it ran on.
     fn line(&self, name: &str, status: &Status, nodes: &[usize], note: Option<&str>) -> String {
         let mark = self.marks.of(status);
 
@@ -616,7 +626,7 @@ impl State {
         };
 
         // a machine with one node hands out no nodes at all, so
-        // this is empty there and the line reads as it always has
+        // this is empty there and adds nothing to the line
         let placed = match (nodes, note) {
             ([], _) => String::new(),
             (nodes, None) => format!("node {}", crate::cpu::list(nodes)),
@@ -661,7 +671,7 @@ impl State {
     }
 }
 
-/// A duration a reader can take in at a glance, rather than to two places.
+/// A duration for display: `12.3s`, or `4m05.2s` past a minute.
 fn span(d: Duration) -> String {
     let s = d.as_secs_f64();
     if s < 60.0 {

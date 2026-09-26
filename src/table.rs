@@ -29,19 +29,14 @@ const BATCH: &str = "||";
 /// Whether every block gets its own header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Headers {
-    /// One header at the top of the file. Its widths are the floor for every
-    /// block, so blocks line up with it and with each other until some value
-    /// turns out wider than the label above it.
+    /// One header at the top of the file. Blocks are padded to at least its
+    /// widths, so they line up until a value is wider than its heading.
     Once,
     /// A header on every block, so each block reads on its own.
     Each,
 }
 
 /// How the table is laid out and when it reaches the file.
-///
-/// The combinations that make no sense cannot be written down: there is nothing
-/// to decide about headers when the file holds one block, and ragged columns
-/// force a header on every block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     /// Hold everything back and write one table with every row padded alike.
@@ -61,16 +56,19 @@ pub enum Mode {
 pub struct Table {
     path: PathBuf,
     mode: Mode,
-    /// The columns every block carries, worked out before anything runs so blocks
-    /// agree whatever order fields turn up in. Unused by [`Mode::Ragged`], which
-    /// asks each step instead.
+    /// The columns every block carries, unused by [`Mode::Ragged`].
+    //
+    // worked out before anything runs, so blocks agree
+    // whatever order fields turn up in
     columns: Columns,
     /// Every row so far, for [`Mode::Whole`].
     rows: Vec<Vec<Cell>>,
-    /// Widths every block starts from, worked out before the run from everything
-    /// already known: names, fields, tags, argv. Only the numbers are missing,
-    /// and their headings are wider than they usually are. Empty for the modes
-    /// that do not share widths between blocks.
+    /// The widths every block is padded to at least, empty for the modes that
+    /// do not share widths between blocks.
+    //
+    // measured before the run from names, fields, tags and
+    // argv. only the numbers are missing, and their headings
+    // are usually wider than they are
     floor: Widths,
     text: String,
 }
@@ -117,8 +115,8 @@ impl Sink for Table {
     fn start(&mut self, steps: &[Step<'_>]) -> Result<(), BoxError> {
         self.columns = Columns::of(steps);
 
-        // Ragged blocks are meant to differ, and Whole renders in one go, so
-        // neither has anything to share.
+        // ragged blocks differ by design, and whole renders in
+        // one go, so neither shares widths
         self.floor = match self.mode {
             Mode::Ragged | Mode::Whole => Widths::default(),
             _ => self.columns.measure(steps),
@@ -176,24 +174,21 @@ impl Sink for Table {
 
 /// The field keys and tags a block carries, and which placement columns it
 /// needs.
-///
-/// Which ones there are depends on the commands, so every part of a block —
-/// the header, the step line, each command line — has to agree about them. They
-/// live here rather than being handed to each in turn.
 #[derive(Clone, Debug, Default)]
 struct Columns {
     keys: Vec<String>,
     tags: Vec<String>,
-    /// Whether anything in the run asks to be pinned. A run where nothing does
-    /// gets no cpus column at all, rather than one of nothing but dashes.
-    ///
-    /// This asks what was requested and not where anything landed, because the
-    /// columns are settled before the run and nothing has landed anywhere yet.
+    /// Whether anything in the run asks to be pinned.
+    //
+    // what was requested, not where anything landed: the
+    // columns are settled before the run. a run with nothing
+    // pinned gets no cpus column rather than one of dashes
     cpus: bool,
 
-    /// Whether to say which memory node each command landed on. A machine with
-    /// one node has nothing to say here, so it gets no column rather than one
-    /// reading `0` all the way down.
+    /// Whether to show which memory node each command landed on.
+    //
+    // a machine with one node gets no column rather than
+    // one reading `0` all the way down
     nodes: bool,
 
     /// How wide the cpus column is reserved before anything has cpus to show.
@@ -205,8 +200,7 @@ struct Columns {
 }
 
 impl Columns {
-    /// The keys and tags these steps carry, each in sorted order. Commands and
-    /// closures share the columns, since they share the table.
+    /// The columns these steps need, with keys and tags each in sorted order.
     fn of(steps: &[Step<'_>]) -> Columns {
         let mut keys = BTreeSet::new();
         let mut tags = BTreeSet::new();
@@ -237,15 +231,15 @@ impl Columns {
     }
 
     /// The columns, in the order [`cells`](Columns::cells) fills them.
-    ///
-    /// Placement sits just before argv because the widths reserved for it are
-    /// only guesses, and everything a wider value shifts along is then argv,
-    /// which is last and unpadded anyway.
     fn schema(&self) -> Schema {
         let mut columns = vec![Column::new("step"), Column::new("cmd")];
         columns.extend(self.keys.iter().chain(&self.tags).map(Column::new));
         columns.extend(["wall(s)", "user(s)", "sys(s)"].map(|label| Column::new(label).fixed(2)));
         columns.extend(["cpu(%)", "max_rss", "exit", "status"].map(Column::new));
+
+        // placement sits just before argv because its widths
+        // are only guesses, and a wider value then shifts
+        // only argv, which is last and unpadded
         if self.nodes {
             columns.push(Column::new("node"));
             // prefer:N is as wide as a policy gets on a machine
@@ -259,8 +253,8 @@ impl Columns {
         Schema::new(columns)
     }
 
-    /// `rows` laid out under these columns, from `floor`. One measured for other
-    /// columns, or empty, is no floor at all.
+    /// `rows` laid out under these columns, padded to at least `floor`. A
+    /// `floor` that is empty or measured for other columns is ignored.
     fn render(&self, rows: &[Vec<Cell>], header: Header, floor: &Widths) -> String {
         let schema = self.schema();
         let mut table = toil::Table::new(schema);
@@ -271,9 +265,6 @@ impl Columns {
     }
 
     /// How wide each column has to be for every block to fit under one header.
-    ///
-    /// Everything but the numbers is already known before the run, and the
-    /// headings above the numbers are wider than the numbers usually are.
     fn measure(&self, steps: &[Step<'_>]) -> Widths {
         let schema = self.schema();
         let rows: Vec<_> = steps
@@ -288,8 +279,8 @@ impl Columns {
     fn block(&self, step: &Step<'_>) -> Vec<Vec<Cell>> {
         let mut rows = Vec::new();
 
-        // a step of one would just repeat itself, so it gets no line of its own
-        // and keeps the first column instead, with its command filling in the rest
+        // a step of one gets no line of its own: its name goes
+        // in the first column of its command's row
         let alone = step.items().count() == 1;
         let first = if alone {
             Cell::from(step.label())
@@ -334,18 +325,18 @@ impl Columns {
         };
 
         if !timings.is_empty() {
-            // summed CPU against measured wall is what shows whether a batch
-            // actually bought anything: a step that ran four at once reads about
-            // four times what any one of them did
+            // summed cpu against measured wall shows how much a
+            // batch ran in parallel: a step that ran four at once
+            // reads about four times what any one of them did
             //
-            // a closure has no cpu figure, and a sum over only what we did
-            // measure would read as the step's whole cost. std's Sum for Option
-            // gives up on the total instead, which is the honest answer
+            // a closure has no cpu figure, and summing Options
+            // gives None if any is None, so the step gets no total
+            // rather than a partial one that reads as its whole cost
             cost.user_s = timings.iter().map(|t| t.user_s).sum();
             cost.sys_s = timings.iter().map(|t| t.sys_s).sum();
-            // the largest any one process got, which is not the same as the most
-            // the step held at once — wait4 cannot tell us that
-            // a max, unlike a sum, is not spoiled by one with no number at all
+            // the largest any one process reached, not the most the
+            // step held at once, which wait4 does not report. a
+            // missing figure leaves a max correct, so it is skipped
             cost.max_rss_kb = timings.iter().filter_map(|t| t.max_rss_kb).max();
         }
 
@@ -372,13 +363,9 @@ impl Columns {
         })
     }
 
-    /// One item's line, whichever kind it is. `first` is the step name for a
-    /// collapsed step of one, and a right-aligned `|` or `||` otherwise. The
-    /// columns a closure has no answer for come back `None` from [`Item`] and
-    /// print as `-`.
+    /// One item's line. `first` is the step name for a collapsed step of one,
+    /// and a right-aligned `|` or `||` otherwise.
     fn row(&self, first: Cell, item: Item<'_>, pool: Pool<'_>) -> Vec<Cell> {
-        // two separate questions: what it cost, and how it went. one that could
-        // not start has nothing to say about the first
         let t = item.status().timing();
         let (cpus, nodes) = match pool {
             Pool::Named(cpus, nodes) => (cpus, nodes),
@@ -441,7 +428,7 @@ impl Columns {
         cells
     }
 
-    /// The field and tag cells, which every row carries the same way.
+    /// The field and tag cells.
     fn key_cells(&self, fields: &BTreeMap<String, String>, tags: &BTreeSet<String>) -> Vec<Cell> {
         let fields = self.keys.iter().map(|k| Cell::from(fields.get(k)));
         let tags = self
@@ -452,8 +439,8 @@ impl Columns {
     }
 }
 
-/// Everything one line says, before the columns it has decide what is left
-/// out.
+/// Every cell of one line, before [`cells`](Columns::cells) leaves out the
+/// placement columns this table does not have.
 struct Line {
     first: Cell,
     name: Cell,
@@ -465,8 +452,7 @@ struct Line {
     argv: Cell,
 }
 
-/// What something cost and how it went. Anything left out prints as `-`,
-/// which is how a command that never started says it has no numbers.
+/// What something cost and how it went. A `None` prints as `-`.
 #[derive(Default)]
 struct Cost {
     wall_s: Option<f64>,
@@ -495,21 +481,23 @@ impl Cost {
     }
 }
 
-/// `time`'s `%P`: the CPU something burned over the wall clock it took, so a
-/// command that kept four cores busy the whole way through reads 400%.
-///
-/// Truncated rather than rounded, since `time` divides two integers. `time`
-/// writes `?%` when there is no clock to divide by; this says nothing, and the
-/// table writes that as `-` like any other missing number.
+/// `time`'s `%P`: cpu time over wall clock, so four cores busy throughout
+/// read 400%. `None` when there is no wall clock to divide by.
 fn cpu_pct(cpu_s: f64, wall_s: Option<f64>) -> Option<String> {
+    // `time` writes `?%` here; `None` prints as `-` like
+    // any other missing number
     let wall = wall_s.filter(|wall| *wall > 0.0)?;
+
+    // truncated rather than rounded to match `time`,
+    // which divides two integers
     Some(format!("{:.0}%", (cpu_s / wall * 100.0).floor()))
 }
 
-/// A cpu or node list, or `-` for one with nothing in it: a command that asked
-/// for cpus and never got as far as holding any reads the same as having none.
+/// A cpu or node list, or `-` for an empty one.
 fn listed(list: &[usize]) -> Cell {
     match list {
+        // a command that asked for cpus and never held any
+        // reads the same as one that asked for none
         [] => Cell::missing(),
         list => Cell::from(crate::cpu::list(list)),
     }
@@ -526,10 +514,8 @@ enum Pool<'a> {
     Named(&'a [usize], &'a [usize]),
 }
 
-/// The status column. It answers one question — did this work — and leaves the
-/// exit column to say what the command actually reported, which is also how
-/// "never started" tells itself apart from "started and failed" without a word
-/// of its own: there is no exit code beside it.
+/// The status column: whether it worked. What the command reported is left
+/// to the exit column.
 fn status_word(status: &Status) -> &'static str {
     match status {
         Status::NotRun => "-",
@@ -722,8 +708,7 @@ mod tests {
         assert!(heads[1].contains("job"), "burn does: {}", heads[1]);
     }
 
-    /// One pinned command that landed on node 1, on a machine that has more
-    /// than one to land on.
+    /// One command pinned to cpus 4 and 6, and placed on node 1 when `numa`.
     fn placed<'a>(numa: bool) -> Step<'a> {
         let mut step = Step::serial([cmd("/x", "pinned").cores(2)]).name("s");
         for cmd in step.cmds_mut() {
@@ -838,8 +823,9 @@ mod tests {
 
     #[test]
     fn status_and_exit_answer_different_questions() {
-        // a command that never started has no exit code beside its "fail", which
-        // is how it tells itself apart from one that started and failed
+        // a command that could not start reads "fail" with no
+        // exit code beside it, which separates it from one that
+        // started and failed
         assert_eq!(status_word(&Status::NotRun), "-");
         assert_eq!(status_word(&Status::Skipped), "skip");
         assert_eq!(status_word(&Status::Failed("x".into())), "fail");
@@ -876,8 +862,8 @@ mod tests {
         .name("check");
         finish(&mut check, 2);
 
-        // the closure row carries a wall clock and a verdict, and dashes every
-        // column a thread has no answer for
+        // the closure row has a wall clock and a status, and `-`
+        // in every column a closure has no figure for
         let expected = "\
 # step     cmd    job shard wall(s) user(s) sys(s) cpu(%) max_rss exit status argv
 # -------- ------ --- ----- ------- ------- ------ ------ ------- ---- ------ ----

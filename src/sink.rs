@@ -1,8 +1,8 @@
 //! Where results go.
 //!
-//! A [`Pipeline`](crate::Pipeline) knows nothing about output. It runs
-//! commands and announces what happened to whatever sinks were registered on
-//! it. Printing progress and writing the summary table are both just sinks.
+//! A [`Pipeline`](crate::Pipeline) writes no output of its own. It runs
+//! commands and reports what happened to the sinks registered on it. Printing
+//! progress and writing the summary table are both sinks.
 //!
 //! # What a sink is promised
 //!
@@ -12,8 +12,8 @@
 //! - [`start`](Sink::start) once, before anything runs.
 //! - Then, for every step in turn: [`step_start`](Sink::step_start), the items
 //!   inside it, then [`step_done`](Sink::step_done). Every step gets both, in
-//!   that order, including the ones a failed run never reached — those simply
-//!   get them one after the other with skipped items between.
+//!   that order, including the ones a failed run never reached, which get
+//!   them one after the other with skipped items between.
 //! - [`abandoned`](Sink::abandoned) if the run is being given up on, once.
 //! - [`finish`](Sink::finish) once, however it ended.
 //!
@@ -26,27 +26,25 @@
 //! goes straight to `item_done` as skipped. So `item_start` implies an
 //! `item_done` will follow, but not the other way round.
 //!
-//! Both carry the item's position in its step, which is what tells two of them
-//! apart when they share a name — [`label`](crate::Item::label) is not unique,
-//! since an unnamed command goes by the program it runs.
+//! Both carry the item's position in its step, which tells two items apart
+//! when they share a name: [`label`](crate::Item::label) is not unique, since
+//! an unnamed command goes by the program it runs.
 //!
 //! [`Status::NotRun`]: crate::Status
 
 use crate::item::Item;
 use crate::step::Step;
 
-/// Something that wants to hear what the pipeline did.
+/// A receiver for what the pipeline did.
 ///
-/// Every method does nothing by default, so an implementation only writes the
-/// ones it cares about. Returning `Err` from any of them stops the run: a sink
-/// that cannot write is worth abandoning a long benchmark over. The run then
-/// fails with [`Error::Sink`](crate::Error::Sink) holding what the sink
-/// returned, and `?` on any std error or `anyhow::Error` produces one.
+/// Every method does nothing by default. Returning `Err` from any of them stops
+/// the run with [`Error::Sink`](crate::Error::Sink) holding what the sink
+/// returned; `?` on any std error or `anyhow::Error` produces one.
 pub trait Sink {
     /// Everything the pipeline is about to run, before any of it has.
     ///
-    /// This is where a sink that needs to know the shape of the whole run — the
-    /// full set of field keys, say — works it out.
+    /// A sink that needs the shape of the whole run, such as the full set of
+    /// field keys, works it out here.
     fn start(
         &mut self,
         steps: &[Step<'_>],
@@ -55,7 +53,7 @@ pub trait Sink {
         Ok(())
     }
 
-    /// This step is the pipeline's current concern.
+    /// The pipeline is starting this step.
     fn step_start(
         &mut self,
         step: &Step<'_>,
@@ -64,12 +62,11 @@ pub trait Sink {
         Ok(())
     }
 
-    /// One item is running: it holds whatever cores it asked for, and the
-    /// process is about to be spawned or the closure about to be called.
+    /// One item holds the cores it asked for and is about to be spawned or
+    /// called. `at` is its position in the step.
     ///
-    /// Time measured from here matches the wall clock that eventually gets
-    /// recorded, because whatever waiting there was for cores has already
-    /// happened. `at` is its position in the step.
+    /// Any wait for cores is over, so time measured from here matches the wall
+    /// clock that gets recorded.
     fn item_start(
         &mut self,
         step: &Step<'_>,

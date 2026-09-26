@@ -62,11 +62,11 @@ impl Status {
         }
     }
 
-    /// What this cost, for the two states that got far enough to have an
-    /// answer. A command killed on its deadline still burned everything it says
-    /// it burned, so it counts.
+    /// What this cost, for a command that finished or timed out.
     pub fn timing(&self) -> Option<&Timing> {
         match self {
+            // one killed on its deadline still used what
+            // wait4 measured
             Status::Finished(t) | Status::TimedOut(t) => Some(t),
             _ => None,
         }
@@ -76,8 +76,8 @@ impl Status {
 impl Cores {
     /// Run one command. Nothing can cut it short but its own timeout.
     pub(crate) fn execute(&self, cmd: &mut Cmd) {
-        // held until the command is finished with, however it finishes; the cpus
-        // go back on the way out of scope
+        // held until the command is finished with, however it
+        // finishes; the cpus are returned when it drops
         let lease = self.acquire(cmd.cores.unwrap_or(0), &|| false);
         settle(cmd, &lease, self);
 
@@ -90,25 +90,24 @@ impl Cores {
 }
 
 impl Closure<'_> {
-    /// Run it and time it.
-    ///
-    /// The wall clock is all there is. A panic is caught here, so one bad
-    /// closure costs one step's worth rather than the run — the default hook
-    /// still prints its backtrace on the way past, and `panic = "abort"` turns
-    /// catching off entirely.
+    /// Run it and time it, recording a panic as a failure.
     pub(crate) fn execute(&mut self) {
         // a closure that has already run has nothing left to do, and its status
         // already says how it went
         let Some(f) = self.f.take() else { return };
 
         let start = Instant::now();
+
+        // caught so one bad closure fails its step and not the
+        // run. the default hook still prints the backtrace, and
+        // under panic = "abort" nothing is caught
         let out = catch_unwind(AssertUnwindSafe(f));
         let timing = Timing {
             wall_s: start.elapsed().as_secs_f64(),
             user_s: None,
             sys_s: None,
             max_rss_kb: None,
-            // nothing exited, but `ok` reads this to say it went fine
+            // nothing exited, but `ok` checks this
             exit: 0,
         };
 
@@ -129,14 +128,11 @@ fn panic_msg(p: &(dyn std::any::Any + Send)) -> &str {
 }
 
 /// One batch step: whether it has been cancelled, and the pids it has running.
-///
-/// Both are made fresh for the step, so cancelling reaches that step's commands
-/// and nothing else, and leaves nothing behind for the next step.
+/// Made fresh per step, so a cancel reaches only that step's commands.
 pub(crate) struct Batch<'a> {
     cores: &'a Cores,
     cancelled: AtomicBool,
-    /// A cancel has to reach every process at once, and this is the only place
-    /// their pids are collected.
+    /// The pids of the commands running now.
     running: Mutex<Vec<libc::pid_t>>,
     emptied: Condvar,
 }
@@ -156,11 +152,7 @@ impl<'a> Batch<'a> {
     }
 
     /// Run one command as part of the batch, which may be cancelled under it.
-    ///
-    /// `started` runs once the command has its cores and is about to be
-    /// spawned, so anything timing it from there measures the same stretch the
-    /// command itself reports. A batch can wait a long time for cores, and
-    /// counting that would put the two out by however long the wait was.
+    /// `started` runs once the command has its cores, just before the spawn.
     pub(crate) fn execute(&self, cmd: &mut Cmd, started: impl FnOnce()) {
         let lease = self
             .cores
@@ -174,6 +166,9 @@ impl<'a> Batch<'a> {
             return;
         }
         settle(cmd, &lease, self.cores);
+
+        // after the wait for cores, so a caller timing from here
+        // measures the same stretch the command reports
         started();
 
         let status = match cmd.spawn() {
@@ -186,10 +181,11 @@ impl<'a> Batch<'a> {
         cmd.report(status);
     }
 
-    /// Nothing new starts, and everything running is terminated. Calling this
-    /// more than once does nothing extra, which a batch relies on: it cancels
-    /// once per result after the first failure.
+    /// Stop anything new starting and SIGTERM everything running. Calling it
+    /// again does nothing.
     pub(crate) fn cancel<'s>(&'s self, scope: &'s Scope<'s, '_>) {
+        // a batch cancels once per result after the first
+        // failure, so every call past the first returns here
         if self.cancelled.swap(true, Ordering::Relaxed) {
             return;
         }
@@ -209,9 +205,7 @@ impl<'a> Batch<'a> {
         scope.spawn(|| self.kill_remaining());
     }
 
-    /// Whatever ignores the SIGTERM gets a SIGKILL once the grace is up. Only
-    /// pids still listed, and a listed pid has not been reaped, so this cannot
-    /// reach a process that stopped being ours.
+    /// SIGKILL whatever is still listed once the grace is up.
     fn kill_remaining(&self) {
         let running = self.running.lock().unwrap();
         let (running, grace) = self
@@ -219,6 +213,8 @@ impl<'a> Batch<'a> {
             .wait_timeout_while(running, SIGTERM_GRACE, |running| !running.is_empty())
             .unwrap();
 
+        // a listed pid has not been reaped, so it cannot have
+        // been reused for another process
         if grace.timed_out() {
             for pid in running.iter() {
                 signal(*pid, libc::SIGKILL);
@@ -244,11 +240,11 @@ impl<'a> Batch<'a> {
     }
 }
 
-/// Write where a command landed onto it, and the memory policy that follows
-/// from that. One with no lease of its own, in a pool, gets the whole pool.
+/// Record on a command where it landed, and the memory policy that follows.
 fn settle(cmd: &mut Cmd, lease: &Option<Lease>, cores: &Cores) {
     let (cpus, nodes) = match (lease, cores.whole()) {
         (Some(lease), _) => (lease.cpus().to_vec(), lease.nodes().to_vec()),
+        // no lease of its own, in a pool, gets the whole pool
         (None, Some(whole)) if cmd.cores.unwrap_or(0) == 0 => {
             cmd.pooled = true;
             whole
@@ -304,18 +300,17 @@ impl Policy {
 /// The memory policy for a command placed on `nodes`, given the nodes the
 /// process may allocate from. An empty `mems` is one that could not be read,
 /// and allows every node.
-///
-/// A machine with one node hands out no nodes at all, first touch is the
-/// kernel's own behaviour and needs no call, and `MPOL_PREFERRED` names a
-/// single node, so a command preferring one after it had to take cores off two
-/// has no way to say which.
 pub(crate) fn policy(memory: Memory, nodes: &[usize], mems: &[usize]) -> Policy {
     let allowed = |node: &usize| mems.is_empty() || mems.contains(node);
 
     match (memory, nodes) {
+        // a machine with one node hands out no nodes, and first
+        // touch is the kernel's own behaviour
         (_, []) | (Memory::FirstTouch, _) => Policy::Default,
         (Memory::Preferred, [node]) if allowed(node) => Policy::Preferred(*node),
         (Memory::Preferred, [node]) => Policy::Dropped(format!("node {node} not in Mems_allowed")),
+        // MPOL_PREFERRED names a single node, so a command that
+        // took cores off two has no way to say which
         (Memory::Preferred, _) => Policy::Default,
         (Memory::Bound, nodes) => {
             let outside: Vec<usize> = nodes.iter().copied().filter(|n| !allowed(n)).collect();
@@ -355,6 +350,7 @@ fn because(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> String {
 }
 
 fn signal(pid: libc::pid_t, sig: libc::c_int) {
+    // SAFETY: kill takes two integers and touches no memory
     unsafe { libc::kill(pid, sig) };
 }
 
@@ -364,9 +360,13 @@ pub(crate) fn stamp() -> String {
         .unwrap_or_default()
         .as_secs();
     let now = secs as libc::time_t;
+    // SAFETY: tm is integers and a nullable pointer, for
+    // which all zeros is a valid value
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let mut buf = [0u8; 32];
 
+    // SAFETY: every pointer is to a live local, strftime is
+    // given buf's real length, and the format is nul-terminated
     let written = unsafe {
         if libc::localtime_r(&now, &mut tm).is_null() {
             return secs.to_string();
@@ -393,15 +393,10 @@ impl Cmd {
         proc.stdout(self.stdout.stdio()?);
         proc.stderr(self.stderr.stdio()?);
 
-        // the child pins itself on its way to exec, so the pid we end up
-        // waiting on is the program's own and every number we measure is still
-        // the program's. the masks are made out here because the hook runs
-        // between the fork and the exec, where anything that allocates or takes
-        // a lock can hang for good. affinity and memory policy both survive an
-        // exec, so setting them now is enough.
-        //
-        // note: no pinning syscall exists on macOS, so cpus are still leased
-        // and counted there but the child is never actually bound to one.
+        // the child pins itself before exec rather than running
+        // under a wrapper, so the pid waited on and every number
+        // measured are the program's own. affinity and memory
+        // policy both survive an exec
         #[cfg(target_os = "linux")]
         if !self.cpus.is_empty() {
             let set = crate::cpu::mask(&self.cpus);
@@ -411,6 +406,10 @@ impl Cmd {
             }
             let policy = call(&self.policy);
 
+            // SAFETY: the hook runs between fork and exec, where
+            // anything that allocates or takes a lock can hang.
+            // the masks are built before the fork, so the hook
+            // only reads them and makes syscalls
             unsafe {
                 proc.pre_exec(move || {
                     if libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set) != 0 {
@@ -500,13 +499,12 @@ impl Output {
 }
 
 /// A process with a deadline on it.
-///
-/// Only made for a command that asked for a timeout — one that did not is waited
-/// on directly and never touches a lock. `finished` is set while the process is
-/// over but not yet reaped, which is the window in which the waiting thread can
-/// be told to leave the pid alone.
 struct Deadline {
     pid: libc::pid_t,
+
+    // set while the process is over but not yet reaped, the
+    // window in which the deadline thread can still be told
+    // to leave the pid alone
     finished: Mutex<bool>,
     changed: Condvar,
 }
@@ -548,17 +546,16 @@ impl Deadline {
     }
 }
 
-/// Wait for the process, terminating it if it runs longer than `limit`. The flag
-/// says whether it came to that.
-///
-/// `exited` is handed straight to [`reap`]. A command with no limit needs no
-/// second thread and no lock, which is the common case.
+/// Wait for the process, terminating it if it runs longer than `limit`.
+/// `exited` runs as it does in [`reap`].
 fn wait(
     pid: libc::pid_t,
     start: Instant,
     limit: Option<Duration>,
     exited: impl FnOnce(),
 ) -> Status {
+    // no limit, the common case, needs no second thread and
+    // no lock
     let Some(limit) = limit else {
         return reap(pid, start, exited).map_or_else(Status::Failed, Status::Finished);
     };
@@ -579,15 +576,14 @@ fn wait(
     })
 }
 
-/// Block until the process is over, then collect what it cost.
-///
-/// Two waits rather than one. `waitid` says it is over but leaves the pid held,
-/// and only `wait4` hands it back — `exited` runs in the gap between them, which
-/// is the one moment anything else holding this pid can be told to stop
-/// signalling it. It runs whether or not the first wait worked, so a caller
-/// never has to arrange it a second time: a wait that failed leaves nothing more
-/// to be done with this pid either.
+/// Block until the process is over, then collect what it cost. `exited` runs
+/// once the process is over and before its pid is released, even on failure.
 fn reap(pid: libc::pid_t, start: Instant, exited: impl FnOnce()) -> Result<Timing, String> {
+    // two waits: waitid with WNOWAIT leaves the pid held, and
+    // only wait4 releases it
+    //
+    // SAFETY: siginfo_t is plain data, and waitid is handed a
+    // pointer to it that outlives the call
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let rc = unsafe {
         libc::waitid(
@@ -602,12 +598,20 @@ fn reap(pid: libc::pid_t, start: Instant, exited: impl FnOnce()) -> Result<Timin
     // taken here rather than after the reap, so it is when the process ended
     let wall_s = start.elapsed().as_secs_f64();
 
+    // the gap between the waits is the one moment anything
+    // else holding this pid can be told to stop signalling
+    // it. it runs even if waitid failed, since a failed wait
+    // leaves nothing more to do with this pid either
     exited();
     waited.map_err(because("waitid failed"))?;
 
     let mut status: libc::c_int = 0;
+    // SAFETY: rusage is plain data, and wait4 is handed
+    // pointers to live locals
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    // std never reaps a child on its own, so nothing in it races with this
+
+    // std never reaps a child on its own, so nothing in it
+    // races with this
     let rc = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
     if rc < 0 {
         return Err(because("wait4 failed")(io::Error::last_os_error()));
@@ -630,8 +634,7 @@ fn reap(pid: libc::pid_t, start: Instant, exited: impl FnOnce()) -> Result<Timin
     })
 }
 
-/// `ru_maxrss` in kilobytes. The kernel hands it back in kilobytes on Linux
-/// and bytes on macOS, so only macOS needs the conversion.
+/// `ru_maxrss` in kilobytes.
 #[cfg(target_os = "linux")]
 fn max_rss_kb(usage: &libc::rusage) -> i64 {
     usage.ru_maxrss
@@ -639,6 +642,7 @@ fn max_rss_kb(usage: &libc::rusage) -> i64 {
 
 #[cfg(not(target_os = "linux"))]
 fn max_rss_kb(usage: &libc::rusage) -> i64 {
+    // macOS reports ru_maxrss in bytes, Linux in kilobytes
     usage.ru_maxrss / 1024
 }
 
@@ -700,7 +704,7 @@ mod tests {
             Policy::Preferred(1)
         );
         // MPOL_PREFERRED has no way to say "either of these two",
-        // so a command that had to span says nothing at all
+        // so a command that had to span asks for no policy
         assert_eq!(policy(Memory::Preferred, &[0, 1], &[0, 1]), Policy::Default);
     }
 
@@ -752,6 +756,7 @@ mod tests {
         // so binding this one leaks into nothing else. node 0
         // exists on every numa kernel
         let (mask, maxnode) = crate::cpu::nodemask(&[0]);
+        // SAFETY: mask outlives the call and holds maxnode bits
         let rc =
             unsafe { libc::syscall(libc::SYS_set_mempolicy, MPOL_BIND, mask.as_ptr(), maxnode) };
         let err = std::io::Error::last_os_error();
@@ -763,6 +768,9 @@ mod tests {
         // narrower than the machine's node count
         let mut mode: libc::c_int = -1;
         let mut got = [0 as libc::c_ulong; 1024 / libc::c_ulong::BITS as usize];
+
+        // SAFETY: mode and got are live locals, got holds 1024
+        // bits, and a null mask with maxnode 0 resets the policy
         unsafe {
             libc::syscall(
                 libc::SYS_get_mempolicy,
@@ -833,13 +841,14 @@ mod tests {
 
     #[test]
     fn the_pid_is_still_ours_when_exited_runs_and_gone_after() {
-        // this is the whole reason for waitid(WNOWAIT): anything holding the pid
-        // has to be told to let go while it is still a zombie, because once the
-        // reap lands it could belong to someone else
+        // anything holding the pid has to be told to let go
+        // while it is still a zombie, because once it is reaped
+        // it can be reused for another process
         let (pid, at) = start("exit 0");
 
         let mut ours_in_the_gap = None;
         reap(pid, at, || {
+            // SAFETY: signal 0 only checks the pid exists
             ours_in_the_gap = Some(unsafe { libc::kill(pid, 0) });
         })
         .expect("reap");
