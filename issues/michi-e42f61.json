@@ -1,0 +1,28 @@
+{
+  "id": "michi-e42f61",
+  "title": "Batched launches serialise on fork() and cost in proportion to the parent's RSS",
+  "body": "Measured on a 192-core, 2-node box with /bin/true as the command, so only the launch is timed. Milliseconds of wall per launch:\n\n    bash fork+exec, serial              0.81\n    /usr/bin/time <cmd>, serial         1.61\n    /usr/bin/time <cmd>, xargs -P 48    0.42\n    michi Step::batched, 1 wide, 2000   0.73\n    michi Step::batched, 48 wide, 2000  1.30\n    michi Step::batched, 48 wide, 20000 2.25\n\nSerially michi matches a bare fork. At 48 wide each launch is slower than at 1 wide, and slower again as the step grows. In a real pipeline whose parent held 2.6 GB (a 20,778-command mkdir step, 49 threads) michi ran 11 launches a second, 90 ms each, with one core pegged in kernel page-table code. The max RSS michi measured for every child was the parent's 2.55 GiB.\n\nCause: Cmd::spawn in src/execute.rs sets affinity and memory policy in a pre_exec hook, and std::process::Command falls back from posix_spawn to fork() whenever a hook is set. fork() copies the parent's page tables under the mm lock, so concurrent workers wait on each other and each copy costs in proportion to the parent's RSS. The wait on the lock is inferred from the pegged core, not traced.\n\nFix candidates: spawn via vfork/CLONE_VFORK or posix_spawn and apply affinity and policy another way, either from the parent on the child's pid before it execs, or by exec-ing through a wrapper that sets them. A Cmd with no cpus already takes the posix_spawn path, so the fast and slow paths can be compared in the driver by giving the step a pool or not.",
+  "type": "bug",
+  "status": "open",
+  "priority": 2,
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-10-06T20:52:07.692324175Z",
+  "updated_at": "2026-10-06T20:52:07.692324175Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "7ee3b95",
+      "branch": "dev"
+    },
+    "closed": null
+  }
+}
