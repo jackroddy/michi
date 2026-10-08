@@ -13,7 +13,7 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.504397794Z",
-  "updated_at": "2026-10-08T20:42:59.804595235Z",
+  "updated_at": "2026-10-08T20:42:59.838265271Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -57,6 +57,13 @@
       "at": "2026-10-08T20:42:59.804594325Z",
       "author": "Jack Roddy/a556920e",
       "text": "Design: commands. Agreed 2026-10-08.\n\nInside a step, a command is shell text from its first token to the next\nunquoted `;`. It may span lines. `cmd1; cmd2` is two commands, each its\nown process and its own table row. michi hands the text to `/bin/sh -c`\nafter the steps below, and the table's argv column shows the text as\nwritten.\n\nTo find the `;`, michi scans with the shell's quoting in mind. A `;` is\nthe shell's, not a terminator, inside single or double quotes, after a\nbackslash, inside `$(…)`, `${…}`, `(…)` or `{…}`, and inside backticks. A\n`}` with no `{` open, or a `#[` at the start of a line, means the `;` was\nleft out, and michi says so at load rather than reading the next step's\nheader as part of the command.\n\nA command cannot begin with `<`, since that opens a parameter list. Write\n`sort < in.txt` rather than `< in.txt sort`.\n\nBefore the text reaches the shell:\n\n1. michi removes a `#` comment: a `#` at the start of a word, outside\n   quotes, to the end of its physical line. `//` is not a comment\n   inside a command, since `http://` and `a//b` are shell.\n2. michi replaces newlines outside quotes with spaces, so a wrapped\n   command is one shell command. A newline inside quotes stays.\n3. michi substitutes sweep variables, as below.\n\nA raw string is a command too: `r#\"for f in *.txt; do wc -l $f; done\"#;`.\nmichi hands it over without the scanning or the joining, so it may hold\nits own `;`, a heredoc, or a `case`. Substitution still applies to it.\n\nA command's first word, after substitution, is its default label.\n\n### Substitution\n\nmichi replaces `$N` and `${N}` in command text, in a string, or as a bare\nattribute argument with the current value of N when N is a sweep\nvariable. Any other `$x` reaches the shell untouched, so `$HOME`,\n`$(…)` and `$f` inside a raw-string loop keep working.\n\nThe splice is textual. A value with a space in it splits as it would in\nshell, and the author quotes it as in shell: `\"$Q\"`.\n\nmichi never substitutes `\\$N`, and the backslash reaches the shell, whose\nown rules for `\\$` then apply: a literal `$N` outside single quotes.\n\n### Paths\n\nA relative path in an attribute or a command is relative to the working\ndirectory of the `michi` process, as it is for `sbatch` and `make`. The\n`dir` attribute sets a command's own working directory.",
+      "commit": "ab1dfb6",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T20:42:59.838264641Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Design: sweeps. Agreed 2026-10-08.\n\nA parameter list, `<…>`, sits on a step header or on a bare block, and\nrepeats the contents of that block once per point.\n\n| form | means |\n| --- | --- |\n| `<N = [5, 10, 15]>` | declare N with its list inline |\n| `<quick.N>` | declare N from the data block, named by the last segment |\n| `<M = quick.N>` | the same list under another name |\n| `<N, K>` | a product, N outer, K inner |\n| `<(N, LABEL) = sizes.POINTS>` | a tuple list, the variables advance together |\n\nInside the block, `$N` is the current value. One name inside and out.\n\nThe shorthand on a tuple list, `<sizes.POINTS>`, is an error: a tuple\nlist needs the pattern form. Declaring a name already bound by an\nenclosing block is an error. A `$N` inside a list literal in a parameter\nlist is not allowed.\n\nWhat is repeated depends on where the list sits:\n\n| where the list sits | effect |\n| --- | --- |\n| `step burn<N> { … }` | one step, its body repeated per point |\n| `<N> { step burn { … } }` | one step per point |\n| `<N> { … }` inside a step | that command or group repeated per point |\n| `<N> { pipeline … }` | forbidden |\n\nmichi labels the items directly inside the repeated block by their\ninstantiation, with no spaces: `burn<5,a>`, `seq<5,a>`. The table pads\ncolumns with whitespace, so a label never holds a space. A `name`\nattribute overrides the label.",
       "commit": "ab1dfb6",
       "branch": "michi-cli"
     }
