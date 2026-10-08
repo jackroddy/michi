@@ -15,11 +15,19 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.559649394Z",
-  "updated_at": "2026-10-08T19:39:37.559649394Z",
+  "updated_at": "2026-10-08T21:05:14.89036173Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
-  "notes": [],
+  "notes": [
+    {
+      "at": "2026-10-08T21:05:14.89036112Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "A provisional `michi sh FILE` prints the bash script, and `michi FILE` parses and resolves. Both are placeholders for the real command line.",
+      "commit": "4e6b584",
+      "branch": "michi-cli"
+    }
+  ],
   "stamps": {
     "created": {
       "commit": "7ee3b95",
