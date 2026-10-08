@@ -15,7 +15,7 @@
   "lease_expires": "2026-10-08T20:24:57.033145239Z",
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.527769435Z",
-  "updated_at": "2026-10-08T21:05:14.881421314Z",
+  "updated_at": "2026-10-08T21:13:16.195788167Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -52,6 +52,13 @@
       "at": "2026-10-08T21:05:14.881420704Z",
       "author": "Jack Roddy/a556920e",
       "text": "Resolve pass written (resolve.rs): ranges evaluated with the float rendering rule, data references and parameter lists checked, duplicate blocks and keys, tuple shapes, sweep variables in attribute arguments. Script generator written (sh.rs) and matches the hand-compiled syntax.sh byte for byte. Golden harness in tests/golden.rs with two cases, syntax and shapes, and a bash -n check. Expand and lower remain.",
+      "commit": "4e6b584",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T21:13:16.195787657Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Second review applied: comment injection, loop index clobbering, raw string references, data hoisting, data in sweeps rejected, inheritance through nested sweeps, range direction and float rendering, literal-only lists, flattened-name collisions, reserved _ names, sweep attributes seeing their own variables, harness ordering and missing-script messages.",
       "commit": "4e6b584",
       "branch": "michi-cli"
     }
