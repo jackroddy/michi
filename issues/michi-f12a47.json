@@ -13,7 +13,7 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.504397794Z",
-  "updated_at": "2026-10-08T21:54:48.495309161Z",
+  "updated_at": "2026-10-08T22:30:44.891869501Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -92,6 +92,13 @@
       "at": "2026-10-08T21:54:48.495308591Z",
       "author": "Jack Roddy/a556920e",
       "text": "The worked example in michi-cli/tests/cases/syntax.michi now runs: its commands are seq, wc, echo, printf, sort and tail, so the golden test executes the generated script and checks its stdout against syntax.out. The example's shape is unchanged. The earlier note with nail, make-input and bench is the sketch as discussed, not the test input.",
+      "commit": "4e6b584",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T22:30:44.891868961Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Design: additions from the expand and lower review, 2026-10-08.\n\n- `sub` is not a command attribute: every command runs as /bin/sh -c, so a subcommand level has no meaning. The command table loses it.\n- `table(…, mode = blocks)` is allowed bare and means headers = once. Headers are once or each; the library has no whole.\n- A file may expand to at most 1,000,000 steps and commands. Past that, expansion stops with an error at the item being made, with its bindings.\n- In an instantiation label, whitespace inside a value becomes `_`, so a string value \"a b\" labels as <a_b>.\n- A data value is literal everywhere it lands: a $x inside a data string is never substituted, in a command, a string or an attribute, and reaches the shell as written.\n- `env` and `field` take scalars; a list, tuple or call there is an error.\n- A library error from building that names a step is reported at that step's span with its bindings.\n- The provisional `michi FILE` runs every pipeline in order and stops at the first that fails.",
       "commit": "4e6b584",
       "branch": "michi-cli"
     }
