@@ -3,7 +3,7 @@
   "title": "Parser for the .michi file format",
   "body": "Three passes: parse to an untyped tree, expand sweeps, lower to builder calls. Rules in docs/file-format.md. Load-time errors with file, line and the sweep binding.",
   "type": "feature",
-  "status": "in_progress",
+  "status": "closed",
   "priority": 2,
   "labels": [],
   "parent": "michi-f12a47",
@@ -12,13 +12,13 @@
   ],
   "related": [],
   "assignee": "Jack Roddy/a556920e",
-  "lease_expires": "2026-10-08T20:24:57.033145239Z",
+  "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.527769435Z",
-  "updated_at": "2026-10-08T22:30:44.900928511Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-10-08T22:30:44.909026232Z",
+  "closed_at": "2026-10-08T22:30:44.909026232Z",
+  "close_reason": "All four passes and the script generator exist, with unit tests, two running golden cases, and three rounds of review applied. The binary builds and runs a file.",
+  "resolution": "done",
   "notes": [
     {
       "at": "2026-10-08T19:56:33.229577266Z",
@@ -82,6 +82,9 @@
       "commit": "7ee3b95",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "4e6b584",
+      "branch": "michi-cli"
+    }
   }
 }
