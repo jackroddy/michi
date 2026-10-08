@@ -3,7 +3,7 @@
   "title": "CLI for the michi binary",
   "body": "Deferred until the parser exists. Covers run, dry run, choosing a pipeline by name, what a shebang run does with several pipelines in a file, and swapping a dataset without editing the file.",
   "type": "feature",
-  "status": "in_progress",
+  "status": "closed",
   "priority": 3,
   "labels": [],
   "parent": "michi-f12a47",
@@ -12,13 +12,13 @@
   ],
   "related": [],
   "assignee": "Jack Roddy/a556920e",
-  "lease_expires": "2026-10-08T23:14:09.531033083Z",
+  "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.559649394Z",
-  "updated_at": "2026-10-08T23:01:31.424072551Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-10-08T23:01:31.432562888Z",
+  "closed_at": "2026-10-08T23:01:31.432562888Z",
+  "close_reason": "Command line designed and built, with binary tests",
+  "resolution": "done",
   "notes": [
     {
       "at": "2026-10-08T21:05:14.89036112Z",
@@ -40,6 +40,9 @@
       "commit": "7ee3b95",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "a191202",
+      "branch": "michi-cli"
+    }
   }
 }
