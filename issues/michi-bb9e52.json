@@ -15,7 +15,7 @@
   "lease_expires": "2026-10-08T23:14:09.531033083Z",
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.559649394Z",
-  "updated_at": "2026-10-08T22:59:09.531033083Z",
+  "updated_at": "2026-10-08T23:01:31.424072551Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -25,6 +25,13 @@
       "author": "Jack Roddy/a556920e",
       "text": "A provisional `michi sh FILE` prints the bash script, and `michi FILE` parses and resolves. Both are placeholders for the real command line.",
       "commit": "4e6b584",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T23:01:31.424071961Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Done 2026-10-08: clap with derive, flags --dry-run, --sh, -p/--pipeline (repeatable, ordered), --silent, --table PATH (error when the file declares one). Progress on by default. Exit codes 0 passed, 1 failed while running, 2 nothing ran. Overrides deferred to michi-875210.",
+      "commit": "a191202",
       "branch": "michi-cli"
     }
   ],
