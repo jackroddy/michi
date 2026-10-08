@@ -13,7 +13,7 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.504397794Z",
-  "updated_at": "2026-10-08T21:13:16.177878163Z",
+  "updated_at": "2026-10-08T21:54:48.495309161Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -85,6 +85,13 @@
       "at": "2026-10-08T21:13:16.177877643Z",
       "author": "Jack Roddy/a556920e",
       "text": "Design: additions from the resolve and script review, 2026-10-08.\n\n- Names starting with `_` are reserved for the script: no data block, data key or sweep variable may start with one. The script uses `_i` as its tuple loop index and `_N` for the columns of an inline tuple list.\n- The script flattens `block.KEY` to `block_KEY` and a tuple list to `block_KEY_1` and up, so two paths that flatten to one shell name are a load error.\n- A data block sits at the top of the file or directly in a pipeline, never inside a sweep block.\n- The script emits a pipeline's data blocks before its steps, wherever they were written.\n- A data value and a parameter's inline list hold literals only: numbers, strings, identifiers, lists and tuples. No `$x`, no `block.KEY`, no call.\n- A list holds tuples of one width or no tuples at all, in data and in parameter lists.\n- An attribute above a sweep block may use the sweep's own variables, since it lands on the items inside the block, where they are bound. Attributes on a sweep reach through nested sweeps to every item they produce.\n- A raw string command still has `${block.KEY}` rewritten for the script.\n- A multiplying float range prints each value as the shortest text that reads back as itself, since a product has no fixed number of places. A multiplying integer range may not run backwards either.\n- A newline inside an attribute string is flattened to a space in the script's comments.",
+      "commit": "4e6b584",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T21:54:48.495308591Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "The worked example in michi-cli/tests/cases/syntax.michi now runs: its commands are seq, wc, echo, printf, sort and tail, so the golden test executes the generated script and checks its stdout against syntax.out. The example's shape is unchanged. The earlier note with nail, make-input and bench is the sketch as discussed, not the test input.",
       "commit": "4e6b584",
       "branch": "michi-cli"
     }
