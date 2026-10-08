@@ -15,11 +15,19 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.538501764Z",
-  "updated_at": "2026-10-08T19:39:37.538501764Z",
+  "updated_at": "2026-10-08T19:56:33.238272628Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
-  "notes": [],
+  "notes": [
+    {
+      "at": "2026-10-08T19:56:33.238272038Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Decided 2026-10-08: the script is bash. Data blocks become arrays named block_KEY, sweeps become for loops with command text unchanged and $N left to bash, tuple lists become one array per component with an index loop, ranges are written out as literal words, attributes become comments, blank lines between sections. The generator reads the resolved tree, before sweep expansion.",
+      "commit": "7ee3b95",
+      "branch": "dev"
+    }
+  ],
   "stamps": {
     "created": {
       "commit": "7ee3b95",
