@@ -13,7 +13,7 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.504397794Z",
-  "updated_at": "2026-10-08T20:42:59.689667313Z",
+  "updated_at": "2026-10-08T20:42:59.723248291Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -36,6 +36,13 @@
       "at": "2026-10-08T20:42:59.689666573Z",
       "author": "Jack Roddy/a556920e",
       "text": "Design: lexical rules. Agreed 2026-10-08.\n\nNewlines mean nothing anywhere. A statement ends at `;` or at a block.\n\n- `//` starts a comment to end of line, outside command text only.\n- Strings are double quoted. Raw strings are `r#\"…\"#` and carry no escapes.\n- Numbers are bare: `8`, `7.5`. A duration is a number with a unit suffix,\n  one of `ms`, `s`, `m`, `h`: `30s`, `500ms`, `1h`. No compound forms.\n- A bare identifier names an enum variant, in snake case: `spread`,\n  `first_touch`, `on_failure`.\n- Reserved words, which no name or data key may use: `data`, `pipeline`,\n  `step`, `let`, `def`, `fn`, `for`, `in`, `if`, `else`, `use`, `import`,\n  `include`, `true`, `false`. Only the first three mean anything yet.\n- A dotted path, `quick.N`, names a value in a data block.\n- `$N` names a sweep variable.\n- A shebang on line one, `#!/usr/bin/env michi`, is skipped.",
+      "commit": "ab1dfb6",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T20:42:59.723247391Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Design: files, data blocks and pipelines. Agreed 2026-10-08.\n\nA file holds data blocks and one or more pipelines, in any order.\n\n```\ndata NAME {\n    X = [5, 10, 15];\n    Y = \"tmp/err\";\n}\n```\n\nA data block names a group of lists and scalars. A block at the top of the\nfile is visible to every pipeline in it, one inside a pipeline only there.\nTwo blocks of one name in one scope is an error. A value is referenced by\npath, `NAME.X`, in any value position, and a scalar also in command text\nas `${NAME.X}`, which is not valid shell and so cannot collide with it.\n\nA list holds numbers, identifiers, strings, tuples, and ranges. A range is\none element and splices among the others:\n\n| form | gives |\n| --- | --- |\n| `0..5` | 0 1 2 3 4 |\n| `0..=5` | 0 1 2 3 4 5 |\n| `0..100:5` | 0 5 10 … 95 |\n| `1..=16:*2` | 1 2 4 8 16 |\n| `0.0..=1.0:0.1` | 0.0 0.1 … 1.0 |\n| `[1, 2, 4..=8, 16]` | 1 2 4 5 6 7 8 16 |\n\nmichi computes a float range as `start + i × step`, so it reaches the end\nby count and not by accumulation, and it prints each value with as many\ndecimal places as the step or the start has, whichever is more, so `0.1`\nsteps print `0.3` and never `0.30000000000000004`. A literal float prints\nas written.\n\n```\n#[pool(8)]\npipeline NAME { … }\n```\n\nA pipeline holds data blocks, steps and parameter-list blocks. Its\nattributes are the pipeline builder's methods. A parameter list may not\nwrap a pipeline.",
       "commit": "ab1dfb6",
       "branch": "michi-cli"
     }
