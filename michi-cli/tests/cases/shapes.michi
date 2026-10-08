@@ -1,0 +1,71 @@
+// Shapes the worked example does not cover.
+
+data shared {
+    SEEDS = [1, 2];
+}
+
+pipeline first {
+    data pairs {
+        X = [(1, "a b"), (2, c)];
+    }
+
+    // an unnamed step, and a command with a quoted string in it
+    step {
+        echo 'it''s' "a;b";
+    }
+
+    // an inline tuple list, with a string that needs quoting, and a
+    // raw command with a data reference in it
+    step pairs<(N, S) = [(1, "a b"), (2, c), (3, "it's")]> {
+        echo $N "$S";
+        r#"for f in x y; do echo ${late.ROWS} $f; done"#;
+    }
+
+    // data written after its use, and an attribute string that would
+    // break the comment if its newline survived
+    data late {
+        ROWS = 10;
+    }
+
+    step tagged {
+        #[tag("two
+lines")]
+        true;
+    }
+
+    // a tuple list from data, under a step-level sweep with attributes
+    #[jobs(2)]
+    step both<(N, S) = pairs.X, seed = shared.SEEDS> {
+        #[timeout(1m)]
+        <k = [x, y]> {
+            echo run --seed $seed --k $k $N "$S";
+        }
+    }
+}
+
+// a second pipeline, with a sweep around its steps carrying attributes
+// of its own, and a long attribute line that wraps
+#[pool(4), placement(pack), stderr_dir("tmp/first-err"), progress(marks = ascii, color = never)]
+#[table("runs.tbl", mode = blocks(headers = once))]
+pipeline second {
+    #[on_error(skip)]
+    <seed = shared.SEEDS> {
+        step one {
+            echo one $seed;
+        }
+
+        // a nested sweep, with the attribute above it using its own
+        // variable, and the outer one reaching through
+        #[cores($k)]
+        <k = [1, 2]> {
+            step nested {
+                echo nested $seed $k;
+            }
+        }
+
+        #[cores($seed)]
+        step two {
+            echo two $seed;
+        }
+    }
+}

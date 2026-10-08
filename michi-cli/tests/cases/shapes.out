@@ -1,0 +1,26 @@
+its a;b
+1 a b
+10 x
+10 y
+2 c
+10 x
+10 y
+3 it's
+10 x
+10 y
+run --seed 1 --k x 1 a b
+run --seed 1 --k y 1 a b
+run --seed 2 --k x 1 a b
+run --seed 2 --k y 1 a b
+run --seed 1 --k x 2 c
+run --seed 1 --k y 2 c
+run --seed 2 --k x 2 c
+run --seed 2 --k y 2 c
+one 1
+nested 1 1
+nested 1 2
+two 1
+one 2
+nested 2 1
+nested 2 2
+two 2

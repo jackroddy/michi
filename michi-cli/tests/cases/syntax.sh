@@ -15,7 +15,7 @@ sizes_POINTS_2=(small medium large)
 
 # data cfg
 cfg_ERR='tmp/err'
-cfg_ROWS=1000000
+cfg_ROWS=1000
 
 # data quick
 quick_N=(5 10)
@@ -35,51 +35,51 @@ full_S=(7.5 10.0 12.0)
 seq 1 2000 > data.txt
 
 # step count
-wc -l data.txt
-wc -c data.txt
+wc -l < data.txt
+wc -c < data.txt
 
 # step burn: jobs 3, cores 2, memory bound, on_error continue
 for N in "${quick_N[@]}"; do
   for K in "${quick_K[@]}"; do
     # seq<$N,$K>: name burn-$N-$K, timeout 30s, env N=$N, field N=$N K=$K
-    seq 1 ${N}000000 > /dev/null
+    seq 1 ${N}000 | wc -l
   done
 done
 
 # step sizes: jobs 2
-for i in "${!sizes_POINTS_1[@]}"; do
-  N=${sizes_POINTS_1[$i]}
-  LABEL=${sizes_POINTS_2[$i]}
-  # seq<$N,$LABEL>: name size-$LABEL
-  seq 1 ${N}000000 | wc -l
+for _i in "${!sizes_POINTS_1[@]}"; do
+  N=${sizes_POINTS_1[$_i]}
+  LABEL=${sizes_POINTS_2[$_i]}
+  # echo<$N,$LABEL>: name size-$LABEL
+  echo $LABEL $(seq 1 ${N}00 | wc -l)
 done
 
 # step search: jobs 4
 for Q in "${full_Q[@]}"; do
   for T in "${full_T[@]}"; do
     for S in "${full_S[@]}"; do
-      # nail<$Q,$T,$S>: field Q=$Q T=$T S=$S
-      nail search --mmseqs-s $S $Q $T
+      # echo<$Q,$T,$S>: field Q=$Q T=$T S=$S
+      echo search --s $S $Q $T
     done
   done
 done
 
 # step bench
-make-input --seed 42 --rows ${cfg_ROWS} > in.txt
+seq 1 ${cfg_ROWS} | sort -n | tail -n 1 > in.txt
 for THREADS in "${sizes_THREADS[@]}"; do
-  # bench<$THREADS>: timeout 1m
-  bench --threads $THREADS in.txt
+  # printf<$THREADS>: timeout 1m
+  printf 'threads %s rows %s\n' $THREADS "$(cat in.txt)"
 done
 for T in 1 2 4; do
-  # make-input<$T>
-  make-input $T > "in-$T.txt"
-  # bench<$T>
-  bench --threads $T "in-$T.txt"
+  # seq<$T>
+  seq 1 $T > "in-$T.txt"
+  # wc<$T>
+  wc -l < "in-$T.txt"
 done
 for f in in-*.txt; do wc -l $f; done
 
 for T in "${sizes_THREADS[@]}"; do
   # step scale<$T>: cores $T
-  make-input $T > "in-$T.txt"
-  bench --threads $T "in-$T.txt"
+  seq 1 $T > "scale-$T.txt"
+  wc -l < "scale-$T.txt"
 done

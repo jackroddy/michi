@@ -1,31 +1,19 @@
 #!/usr/bin/env michi
-// A file holds data blocks and one or more pipelines. Attributes, `#[…]`,
-// configure the pipeline, step or command below them, and every
+// The worked example of the format, on commands that exist everywhere:
+// seq, wc, echo, printf and sort. Attributes borrow Rust's grammar:
+// `#[…]` configures the pipeline, step or command below it, and every
 // attribute is a builder method. Inside a step, a command is shell text
-// ending in `;`, so it may span lines and `cmd1; cmd2` is two commands.
-// A `;` inside quotes, after a backslash, or inside `$(…)` is the
-// shell's. A raw string, r#"…"#, is handed to sh verbatim for the rare
-// command that needs its own `;`. Newlines mean nothing anywhere. Strings
-// are quoted, numbers and durations are bare.
+// ending in `;`. Strings are quoted, numbers and durations are bare, a
+// bare ident names an enum variant or a list value.
 //
-// Data: `data NAME { X = […]; }` names a group of lists and scalars,
-// referenced as NAME.X. A block at the top of the file is visible to
-// every pipeline, one inside a pipeline only there. A range is a list
-// element and splices among plain values: `..` exclusive, `..=`
-// inclusive, `:5` steps, `:*2` multiplies.
-//
-// Names: in michi syntax a bare ident is an enum variant and a dotted
-// path is a data reference. `$x` is a sweep variable and stands anywhere
-// a value stands: in a command, a string, or a typed attribute argument.
-// In command text `${NAME.X}` reaches a data scalar.
-//
-// A sweep is a parameter list and repeats the contents of the block it
-// sits on, once per point. `<N = [5, 10, 15]>` declares N with its list
-// inline, `<sizes.N>` takes the list from data and names the parameter
-// by the last segment, `<M = sizes.N>` renames. Several parameters form
-// a product, a tuple pattern pairs. The items directly inside the block
-// are labelled by their instantiation, `burn<5, a>`, unless an attribute
-// names them. A sweep may not wrap a pipeline.
+// A sweep is a parameter list, as on a Rust item, and it repeats the
+// contents of the block it sits on, once per point. `<N = [5, 10, 15]>`
+// declares N with its list inline, `<sizes.N>` takes the list from data
+// and names the parameter by the last segment, `<M = sizes.N>` renames.
+// Several parameters form a product, a tuple pattern pairs. Inside the
+// block, `$N` is the current value, one name in and out. The items
+// directly inside the block are labelled by their instantiation,
+// `burn<5,a>`, unless an attribute names them.
 
 data sizes {
     THREADS = [1..=16:*2];
@@ -45,7 +33,7 @@ data sizes {
 pipeline bench {
     data cfg {
         ERR = "tmp/err";
-        ROWS = 1000000;
+        ROWS = 1000;
     }
 
     // Two datasets with the same keys. A step picks one by name.
@@ -68,41 +56,41 @@ pipeline bench {
         seq 1 2000 > data.txt;
     }
 
-    step count { wc -l data.txt; wc -c data.txt; }
+    step count { wc -l < data.txt; wc -c < data.txt; }
 
     // On a step header the block is the body: one step, two commands in
-    // a batch of three, labelled seq<5, a> and seq<10, a>. `field($N,
+    // a batch of three, labelled seq<5,a> and seq<10,a>. `field($N,
     // $K)` records the variables as table columns under their own names.
     #[jobs(3), cores(2), memory(bound), on_error(continue)]
     step burn<quick.N, quick.K> {
         #[name("burn-$N-$K"), timeout(30s), env(N = $N), field($N, $K)]
-        seq 1 ${N}000000 > /dev/null;
+        seq 1 ${N}000 | wc -l;
     }
 
     #[jobs(2)]
     step sizes<(N, LABEL) = sizes.POINTS> {
         #[name("size-$LABEL")]
-        seq 1 ${N}000000 | wc -l;
+        echo $LABEL $(seq 1 ${N}00 | wc -l);
     }
 
     // A three-way product over the full set: 36 commands, four at a time.
     #[jobs(4)]
     step search<full.Q, full.T, full.S> {
         #[field($Q, $T, $S)]
-        nail search --mmseqs-s $S $Q $T;
+        echo search --s $S $Q $T;
     }
 
     // Inside a step the block holds one command or a group.
     step bench {
-        make-input
-            --seed 42
-            --rows ${cfg.ROWS}
+        seq 1 ${cfg.ROWS}
+            | sort -n
+            | tail -n 1
             > in.txt;
         #[timeout(1m)]
-        <sizes.THREADS> { bench --threads $THREADS in.txt; }
+        <sizes.THREADS> { printf 'threads %s rows %s\n' $THREADS "$(cat in.txt)"; }
         <T = [1, 2, 4]> {
-            make-input $T > "in-$T.txt";
-            bench --threads $T "in-$T.txt";
+            seq 1 $T > "in-$T.txt";
+            wc -l < "in-$T.txt";
         }
         r#"for f in in-*.txt; do wc -l $f; done"#;
     }
@@ -113,8 +101,8 @@ pipeline bench {
     <T = sizes.THREADS> {
         #[cores($T)]
         step scale {
-            make-input $T > "in-$T.txt";
-            bench --threads $T "in-$T.txt";
+            seq 1 $T > "scale-$T.txt";
+            wc -l < "scale-$T.txt";
         }
     }
 }

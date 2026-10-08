@@ -220,7 +220,7 @@ impl<'a> Parser<'a> {
         let start = self.expect(&Tok::Keyword(Keyword::Pipeline))?.span;
         let name = self.name("the pipeline's name")?;
         self.expect(&Tok::LBrace)?;
-        let (items, close) = self.pipeline_items()?;
+        let (items, close) = self.pipeline_items(false)?;
         Ok(Pipeline {
             attrs,
             name,
@@ -229,8 +229,9 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Items through the closing `}`, and that brace's span.
-    fn pipeline_items(&mut self) -> Result<(Vec<PipelineItem>, Span), Error> {
+    /// Items through the closing `}`, and that brace's span. `in_sweep`
+    /// when the items are a sweep block's, where a data block may not sit.
+    fn pipeline_items(&mut self, in_sweep: bool) -> Result<(Vec<PipelineItem>, Span), Error> {
         let mut items = Vec::new();
         loop {
             let attrs = self.attrs()?;
@@ -238,6 +239,12 @@ impl<'a> Parser<'a> {
             match next.tok {
                 Tok::Keyword(Keyword::Data) => {
                     reject_attrs(&attrs, "a data block")?;
+                    if in_sweep {
+                        return Err(Error::new(
+                            "a data block sits at the top of the file or of a pipeline, not in a sweep",
+                            next.span,
+                        ));
+                    }
                     items.push(PipelineItem::Data(self.data()?));
                 }
                 Tok::Keyword(Keyword::Step) => {
@@ -247,7 +254,7 @@ impl<'a> Parser<'a> {
                     let start = next.span;
                     let params = self.params()?;
                     self.expect(&Tok::LBrace)?;
-                    let (body, close) = self.pipeline_items()?;
+                    let (body, close) = self.pipeline_items(true)?;
                     items.push(PipelineItem::Sweep(Sweep {
                         attrs,
                         params,
@@ -697,6 +704,10 @@ mod tests {
         assert_eq!(
             err("pipeline p { data d { N = [1, 2; } }"),
             "expected `]`, found `;`"
+        );
+        assert_eq!(
+            err("pipeline p { <T = [1]> { data d { X = 1; } step s { a; } } }"),
+            "a data block sits at the top of the file or of a pipeline, not in a sweep"
         );
         assert_eq!(
             err("pipeline p { step s { 'a; } }"),
