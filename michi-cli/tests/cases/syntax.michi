@@ -1,0 +1,120 @@
+#!/usr/bin/env michi
+// A file holds data blocks and one or more pipelines. Attributes, `#[…]`,
+// configure the pipeline, step or command below them, and every
+// attribute is a builder method. Inside a step, a command is shell text
+// ending in `;`, so it may span lines and `cmd1; cmd2` is two commands.
+// A `;` inside quotes, after a backslash, or inside `$(…)` is the
+// shell's. A raw string, r#"…"#, is handed to sh verbatim for the rare
+// command that needs its own `;`. Newlines mean nothing anywhere. Strings
+// are quoted, numbers and durations are bare.
+//
+// Data: `data NAME { X = […]; }` names a group of lists and scalars,
+// referenced as NAME.X. A block at the top of the file is visible to
+// every pipeline, one inside a pipeline only there. A range is a list
+// element and splices among plain values: `..` exclusive, `..=`
+// inclusive, `:5` steps, `:*2` multiplies.
+//
+// Names: in michi syntax a bare ident is an enum variant and a dotted
+// path is a data reference. `$x` is a sweep variable and stands anywhere
+// a value stands: in a command, a string, or a typed attribute argument.
+// In command text `${NAME.X}` reaches a data scalar.
+//
+// A sweep is a parameter list and repeats the contents of the block it
+// sits on, once per point. `<N = [5, 10, 15]>` declares N with its list
+// inline, `<sizes.N>` takes the list from data and names the parameter
+// by the last segment, `<M = sizes.N>` renames. Several parameters form
+// a product, a tuple pattern pairs. The items directly inside the block
+// are labelled by their instantiation, `burn<5, a>`, unless an attribute
+// names them. A sweep may not wrap a pipeline.
+
+data sizes {
+    THREADS = [1..=16:*2];
+    SEEDS = [0..100:5];
+    FRACS = [0.0..=1.0:0.1];
+    MIXED = [1, 2, 4..=8, 16];
+    POINTS = [
+        (5, small),
+        (10, medium),
+        (15, large),
+    ];
+}
+
+#[pool(8), placement(spread), stderr_dir(cfg.ERR)]
+#[progress(marks = unicode)]
+#[table("runs.tbl", mode = whole)]
+pipeline bench {
+    data cfg {
+        ERR = "tmp/err";
+        ROWS = 1000000;
+    }
+
+    // Two datasets with the same keys. A step picks one by name.
+    data quick {
+        N = [5, 10];
+        K = [a];
+        Q = [a, b];
+        T = [e];
+        S = [7.5];
+    }
+    data full {
+        N = [5, 10, 15];
+        K = [a, b];
+        Q = [a, b, c, d];
+        T = [e, f, g];
+        S = [7.5, 10.0, 12.0];
+    }
+
+    step prep {
+        seq 1 2000 > data.txt;
+    }
+
+    step count { wc -l data.txt; wc -c data.txt; }
+
+    // On a step header the block is the body: one step, two commands in
+    // a batch of three, labelled seq<5, a> and seq<10, a>. `field($N,
+    // $K)` records the variables as table columns under their own names.
+    #[jobs(3), cores(2), memory(bound), on_error(continue)]
+    step burn<quick.N, quick.K> {
+        #[name("burn-$N-$K"), timeout(30s), env(N = $N), field($N, $K)]
+        seq 1 ${N}000000 > /dev/null;
+    }
+
+    #[jobs(2)]
+    step sizes<(N, LABEL) = sizes.POINTS> {
+        #[name("size-$LABEL")]
+        seq 1 ${N}000000 | wc -l;
+    }
+
+    // A three-way product over the full set: 36 commands, four at a time.
+    #[jobs(4)]
+    step search<full.Q, full.T, full.S> {
+        #[field($Q, $T, $S)]
+        nail search --mmseqs-s $S $Q $T;
+    }
+
+    // Inside a step the block holds one command or a group.
+    step bench {
+        make-input
+            --seed 42
+            --rows ${cfg.ROWS}
+            > in.txt;
+        #[timeout(1m)]
+        <sizes.THREADS> { bench --threads $THREADS in.txt; }
+        <T = [1, 2, 4]> {
+            make-input $T > "in-$T.txt";
+            bench --threads $T "in-$T.txt";
+        }
+        r#"for f in in-*.txt; do wc -l $f; done"#;
+    }
+
+    // Around a step the block holds the step: one step per point,
+    // labelled scale<1>, scale<2>, …, each leasing as many cores as it
+    // runs threads.
+    <T = sizes.THREADS> {
+        #[cores($T)]
+        step scale {
+            make-input $T > "in-$T.txt";
+            bench --threads $T "in-$T.txt";
+        }
+    }
+}

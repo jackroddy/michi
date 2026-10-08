@@ -1,7 +1,8 @@
 # michi
 
-> **<u>m</u>ichi <u>i</u>nvokes <u>c</u>ommands & <u>h</u>andles <u>i</u>nstrumentation**
+A workspace of two crates.
 
-## about
-`michi` is a rust library that helps you assemble and instrument (time & memory usage) simple pipelines consisting of shell commands.
-The library is purpose-built for my own use cases, and it was primarily developed using Claude code.
+- [`michi`](michi/): a Rust library that assembles shell command pipelines and
+  instruments them: wall clock, cpu time, peak memory, and core pinning.
+- [`michi-cli`](michi-cli/): the `michi` binary, which runs a pipeline written
+  in a `.michi` file. Under construction.

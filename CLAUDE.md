@@ -1,9 +1,8 @@
-# michi
+# michi workspace
 
-A Rust library for assembling shell command pipelines and instrumenting them:
-wall clock, cpu time, peak memory, and core pinning. A `Step` holds commands or
-closures, a `Sink` watches a run, and `Progress` and `Table` are the two sinks
-that ship with it.
+Two crates. `michi/` is the library: it assembles shell command pipelines and
+instruments them. `michi-cli/` is the `michi` binary, which runs a pipeline
+written in a `.michi` file. Each has its own `CLAUDE.md`.
 
 ## Branches
 
@@ -13,26 +12,13 @@ one.
 `main` carries releases and nothing else. Push to it when cutting a release,
 and leave it alone the rest of the time.
 
-## Releases
-
-michi follows [semantic versioning](https://semver.org/spec/v2.0.0.html). While
-the crate is below 1.0, a breaking change takes the minor number.
-
-Tag every release, annotated, as `vMAJOR.MINOR.PATCH`, on the commit that was
-published.
-
 ## Formatting
 
-`rustfmt` is the format. Run `cargo fmt` before committing.
+`rustfmt` is the format. Run `cargo fmt --all` before committing.
 
-## Changelog
+## Where things go
 
-`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Anything that changes what someone using the library sees goes under
-`[Unreleased]` in the commit that changes it.
-
-## Platforms
-
-64-bit Linux. The build fails on a narrower target. It compiles on macOS, where
-there is no affinity syscall to call, so cores are still leased and counted but
-nothing is ever pinned to one.
+Issues, decisions, and design go in foam. The repository holds code, tests,
+and each crate's `README.md`, `CHANGELOG.md` and `CLAUDE.md`. A design
+document, a sketch, or a plan is never a committed file: its text goes on the
+relevant foam issue as a note, split by topic when it is long.
