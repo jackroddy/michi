@@ -1,0 +1,30 @@
+{
+  "id": "michi-10c927",
+  "title": "Tree-sitter grammar for .michi",
+  "body": "After the Vim syntax file, once the format has stopped moving. Needs a grammar.js, a C scanner for the command-to-semicolon rule under shell quoting, which re-implements lex.rs, generated parser.c, and highlights, injections (bash into command text), folds and indents queries. Conventionally its own repository, registered with nvim-treesitter.",
+  "type": "feature",
+  "status": "open",
+  "priority": 4,
+  "labels": [],
+  "parent": "michi-f12a47",
+  "blocked_by": [
+    "michi-fac206"
+  ],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-10-08T22:59:09.513483853Z",
+  "updated_at": "2026-10-08T22:59:09.513483853Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "a191202",
+      "branch": "michi-cli"
+    },
+    "closed": null
+  }
+}
