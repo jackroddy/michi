@@ -15,7 +15,7 @@
   "lease_expires": "2026-10-08T20:24:57.033145239Z",
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.527769435Z",
-  "updated_at": "2026-10-08T20:28:24.938049507Z",
+  "updated_at": "2026-10-08T20:43:51.632700762Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -40,6 +40,13 @@
       "text": "Review fixes applied 2026-10-08. Left for later passes: resolve must reject a file with no pipeline and a $N inside a list literal in a parameter list; the scanner does not understand bash's $'…' quoting, accepted. Parser now takes trailing commas everywhere, spans cover the delimiters, and a command's first word is only a keyword when followed by whitespace, { or <.",
       "commit": "7ee3b95",
       "branch": "dev"
+    },
+    {
+      "at": "2026-10-08T20:43:51.632700102Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "The design document docs/file-format.md is removed. The design is the set of notes on milestone michi-f12a47. Workspace restructured: the library is michi/, the binary michi-cli/.",
+      "commit": "ab1dfb6",
+      "branch": "michi-cli"
     }
   ],
   "stamps": {
