@@ -3,7 +3,7 @@
   "title": "Syntax highlighting for .michi",
   "body": "Wanted as soon as the first parser exists. Attributes and parameter lists are Rust-shaped, command text is shell.",
   "type": "feature",
-  "status": "in_progress",
+  "status": "closed",
   "priority": 3,
   "labels": [],
   "parent": "michi-f12a47",
@@ -12,13 +12,13 @@
   ],
   "related": [],
   "assignee": "Jack Roddy/a556920e",
-  "lease_expires": "2026-10-08T23:14:09.523297472Z",
+  "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.549074014Z",
-  "updated_at": "2026-10-08T23:02:07.757955885Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-10-08T23:02:07.766546904Z",
+  "closed_at": "2026-10-08T23:02:07.766546904Z",
+  "close_reason": "Vim syntax file written and checked headless in Neovim on both golden cases",
+  "resolution": "done",
   "notes": [
     {
       "at": "2026-10-08T23:02:07.757955355Z",
@@ -33,6 +33,9 @@
       "commit": "7ee3b95",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "a191202",
+      "branch": "michi-cli"
+    }
   }
 }
