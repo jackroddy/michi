@@ -3,9 +3,16 @@
 The `michi` binary. It reads a `.michi` file, a description of a pipeline
 with no Rust in it, and runs the pipeline through the `michi` library.
 
-Under construction. Today the binary parses a file and reports either an
-error or the number of pipelines in it:
+```
+michi bench.michi              # run every pipeline in the file
+michi bench.michi --dry-run    # print the plan and the cores each command gets
+michi bench.michi --sh         # print the file as a bash script
+michi bench.michi -p quick     # run one pipeline by name
+michi bench.michi --silent --table runs.tbl
+```
 
-```
-cargo run -p michi-cli -- pipeline.michi
-```
+A file that starts with `#!/usr/bin/env michi` runs as `./bench.michi`,
+and takes the same flags after its name.
+
+The crate name is a placeholder. A Vim syntax file for `.michi` is under
+`editors/vim/`.

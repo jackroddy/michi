@@ -6,17 +6,28 @@ placeholder until Jack chooses one. The binary is named `michi` either way.
 
 ## Status
 
-Every pass exists, and the binary runs a file. The command line is not
-designed: `michi FILE`, which runs every pipeline in the file in order,
-and `michi sh FILE`, which prints the script, are placeholders for it.
-The design of the file format is in foam, as notes on the milestone issue
-for the format, one note per topic. Read those before touching the parser.
+Every pass exists, and the binary runs a file. The design of the file
+format is in foam, as notes on the milestone issue for the format, one
+note per topic. Read those before touching the parser.
+
+## Command line
+
+`michi FILE` runs every pipeline in the file in order and stops at the
+first that fails. `--dry-run` prints the library's plan instead, `--sh`
+prints the file as a bash script, `-p NAME` picks a pipeline and repeats,
+`--silent` drops progress output, `--table PATH` writes a table and is an
+error when the file declares one. A Progress sink with defaults is on
+unless the file declares its own. Exit codes: 0 when every step passed,
+1 when a step or pipeline failed while running, 2 when nothing ran, for
+a file that would not load, a pipeline this machine cannot build, or a
+bad command line. The flags are parsed with clap, the one dependency the
+crate has beyond the library; the parser itself has none.
 
 ## Structure
 
-The parser is written by hand and has no dependencies beyond the library.
-Four passes, in order, because an attribute argument cannot be typed until
-its sweep variable is bound:
+The parser is written by hand with no dependencies. Four passes, in
+order, because an attribute argument cannot be typed until its sweep
+variable is bound:
 
 - `lex.rs`: text to tokens, and the scan of a command to its `;` under the
   shell's quoting rules.

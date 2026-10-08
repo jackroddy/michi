@@ -18,13 +18,25 @@ pub struct Built {
     pub pipeline: michi::Pipeline<'static>,
 }
 
-/// Build every pipeline in `flat`.
-pub fn lower(flat: &Flat) -> Result<Vec<Built>, Error> {
-    flat.pipelines.iter().map(pipeline).collect()
+/// What the command line asks for beyond the file's own sinks.
+#[derive(Debug, Default)]
+pub struct Sinks {
+    /// A default Progress sink when the file declares none, and the
+    /// file's own when it does. Off, and neither.
+    pub progress: bool,
+    /// A Table sink writing here, which a file declaring its own may
+    /// not combine with.
+    pub table: Option<PathBuf>,
 }
 
-fn pipeline(flat: &FlatPipeline) -> Result<Built, Error> {
+/// Build every pipeline in `flat`.
+pub fn lower(flat: &Flat, sinks: &Sinks) -> Result<Vec<Built>, Error> {
+    flat.pipelines.iter().map(|p| pipeline(p, sinks)).collect()
+}
+
+fn pipeline(flat: &FlatPipeline, sinks: &Sinks) -> Result<Built, Error> {
     let mut builder = michi::PipelineBuilder::new();
+    let mut declared_progress = false;
     for attr in &flat.attrs {
         let args = Args::new(attr, &[]);
         builder = match attr.name.as_str() {
@@ -38,10 +50,35 @@ fn pipeline(flat: &FlatPipeline) -> Result<Built, Error> {
                 args.none()?;
                 builder.no_stderr()
             }
-            "progress" => builder.sink(progress(&args)?),
-            "table" => builder.sink(table(&args)?),
+            "progress" => {
+                declared_progress = true;
+                let sink = progress(&args)?;
+                if sinks.progress {
+                    builder.sink(sink)
+                } else {
+                    builder
+                }
+            }
+            "table" => {
+                if sinks.table.is_some() {
+                    return Err(Error::new(
+                        format!(
+                            "pipeline `{}` declares a table: drop `--table` or the attribute",
+                            flat.name
+                        ),
+                        attr.span,
+                    ));
+                }
+                builder.sink(table(&args)?)
+            }
             _ => return Err(unknown(attr, "a pipeline", &[])),
         };
+    }
+    if sinks.progress && !declared_progress {
+        builder = builder.sink(Progress::new());
+    }
+    if let Some(path) = &sinks.table {
+        builder = builder.sink(Table::new(path));
     }
     for step in &flat.steps {
         builder = builder.step(lower_step(step)?);
@@ -400,7 +437,7 @@ mod tests {
     fn built(src: &str) -> Result<Vec<Built>, Error> {
         let mut file = parse(src).unwrap();
         resolve(&mut file).unwrap();
-        lower(&expand(&file).unwrap())
+        lower(&expand(&file).unwrap(), &Sinks::default())
     }
 
     fn err(src: &str) -> Error {
@@ -453,6 +490,28 @@ mod tests {
         let e = err("pipeline p { <N = [1]> { step s { #[cores(100000)] true; } } }");
         assert!(e.message.contains("cores"), "{}", e.message);
         assert_eq!(e.bindings, [("N".to_string(), "1".to_string())]);
+    }
+
+    #[test]
+    fn sinks_from_the_command_line() {
+        let src = "#[table(\"t\")] pipeline p { step s { true; } }";
+        let mut file = parse(src).unwrap();
+        resolve(&mut file).unwrap();
+        let flat = expand(&file).unwrap();
+        let sinks = Sinks {
+            progress: true,
+            table: Some(PathBuf::from("other")),
+        };
+        let e = lower(&flat, &sinks).err().expect("lowering fails");
+        assert_eq!(
+            e.message,
+            "pipeline `p` declares a table: drop `--table` or the attribute"
+        );
+        let sinks = Sinks {
+            progress: false,
+            table: None,
+        };
+        assert!(lower(&flat, &sinks).is_ok());
     }
 
     #[test]

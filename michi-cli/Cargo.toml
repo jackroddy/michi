@@ -13,4 +13,5 @@ name = "michi"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 michi = { path = "../michi", version = "0.2" }
