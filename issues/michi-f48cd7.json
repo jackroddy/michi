@@ -15,7 +15,7 @@
   "lease_expires": "2026-10-08T20:24:57.033145239Z",
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.527769435Z",
-  "updated_at": "2026-10-08T20:43:51.632700762Z",
+  "updated_at": "2026-10-08T21:05:14.881421314Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -46,6 +46,13 @@
       "author": "Jack Roddy/a556920e",
       "text": "The design document docs/file-format.md is removed. The design is the set of notes on milestone michi-f12a47. Workspace restructured: the library is michi/, the binary michi-cli/.",
       "commit": "ab1dfb6",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T21:05:14.881420704Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Resolve pass written (resolve.rs): ranges evaluated with the float rendering rule, data references and parameter lists checked, duplicate blocks and keys, tuple shapes, sweep variables in attribute arguments. Script generator written (sh.rs) and matches the hand-compiled syntax.sh byte for byte. Golden harness in tests/golden.rs with two cases, syntax and shapes, and a bash -n check. Expand and lower remain.",
+      "commit": "4e6b584",
       "branch": "michi-cli"
     }
   ],
