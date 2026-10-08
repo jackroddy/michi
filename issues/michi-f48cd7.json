@@ -15,7 +15,7 @@
   "lease_expires": "2026-10-08T20:24:57.033145239Z",
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.527769435Z",
-  "updated_at": "2026-10-08T22:25:14.908670628Z",
+  "updated_at": "2026-10-08T22:30:44.900928511Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -66,6 +66,13 @@
       "at": "2026-10-08T22:25:14.908670048Z",
       "author": "Jack Roddy/a556920e",
       "text": "Expand (expand.rs) and lower (lower.rs) written with unit tests. michi FILE builds and runs every pipeline in the file; michi sh FILE prints the script. The shapes case ran end to end through the library under a pool of four cores, with labels and table as designed. Under review.",
+      "commit": "4e6b584",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T22:30:44.900928071Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Third review applied: lazy product walk with a cap, bindings on every lowering error, no spaces in labels, data strings literal, bare blocks mode, Output paths as any string-like value, env and field scalar only, library build errors pointed at their step.",
       "commit": "4e6b584",
       "branch": "michi-cli"
     }
