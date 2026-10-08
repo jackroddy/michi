@@ -15,11 +15,19 @@
   "lease_expires": "2026-10-08T23:14:09.523297472Z",
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.549074014Z",
-  "updated_at": "2026-10-08T22:59:09.523297472Z",
+  "updated_at": "2026-10-08T23:02:07.757955885Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
-  "notes": [],
+  "notes": [
+    {
+      "at": "2026-10-08T23:02:07.757955355Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Done 2026-10-08 as michi-cli/editors/vim: syntax/michi.vim, ftdetect/michi.vim, README.md. Command text is a region ending at ; with the stock sh syntax included, and $N highlighted on top. Regex limits, left for the tree-sitter grammar: a ; inside nested $( ( ) ) or { { } } ends a command early, a command with no ; runs to the next one, an apostrophe in a # comment inside a command confuses the quote skip, sh.vim flags a bare `in` word as an error, and a dotted path highlights as two names.",
+      "commit": "a191202",
+      "branch": "michi-cli"
+    }
+  ],
   "stamps": {
     "created": {
       "commit": "7ee3b95",
