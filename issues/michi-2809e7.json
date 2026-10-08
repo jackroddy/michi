@@ -3,7 +3,7 @@
   "title": "Decide the crate layout for the michi binary",
   "body": "Workspace of michi (bin) and libmichi (lib), michi (lib, unchanged) and michi-cli (bin named michi), or a feature-gated bin in the one crate. The library is already published on crates.io as michi, so renaming it breaks dependants.",
   "type": "decision",
-  "status": "open",
+  "status": "closed",
   "priority": 2,
   "labels": [],
   "parent": "michi-f12a47",
@@ -13,10 +13,10 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.517038346Z",
-  "updated_at": "2026-10-08T19:49:52.278744756Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-10-08T19:49:52.286933883Z",
+  "closed_at": "2026-10-08T19:49:52.286933883Z",
+  "close_reason": "Workspace, library name unchanged, binary crate under a placeholder name",
+  "resolution": "done",
   "notes": [
     {
       "at": "2026-10-08T19:49:52.278743976Z",
@@ -31,6 +31,9 @@
       "commit": "7ee3b95",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "7ee3b95",
+      "branch": "dev"
+    }
   }
 }
