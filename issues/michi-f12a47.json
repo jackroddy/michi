@@ -13,7 +13,7 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.504397794Z",
-  "updated_at": "2026-10-08T20:42:59.838265271Z",
+  "updated_at": "2026-10-08T20:42:59.87130377Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -64,6 +64,13 @@
       "at": "2026-10-08T20:42:59.838264641Z",
       "author": "Jack Roddy/a556920e",
       "text": "Design: sweeps. Agreed 2026-10-08.\n\nA parameter list, `<…>`, sits on a step header or on a bare block, and\nrepeats the contents of that block once per point.\n\n| form | means |\n| --- | --- |\n| `<N = [5, 10, 15]>` | declare N with its list inline |\n| `<quick.N>` | declare N from the data block, named by the last segment |\n| `<M = quick.N>` | the same list under another name |\n| `<N, K>` | a product, N outer, K inner |\n| `<(N, LABEL) = sizes.POINTS>` | a tuple list, the variables advance together |\n\nInside the block, `$N` is the current value. One name inside and out.\n\nThe shorthand on a tuple list, `<sizes.POINTS>`, is an error: a tuple\nlist needs the pattern form. Declaring a name already bound by an\nenclosing block is an error. A `$N` inside a list literal in a parameter\nlist is not allowed.\n\nWhat is repeated depends on where the list sits:\n\n| where the list sits | effect |\n| --- | --- |\n| `step burn<N> { … }` | one step, its body repeated per point |\n| `<N> { step burn { … } }` | one step per point |\n| `<N> { … }` inside a step | that command or group repeated per point |\n| `<N> { pipeline … }` | forbidden |\n\nmichi labels the items directly inside the repeated block by their\ninstantiation, with no spaces: `burn<5,a>`, `seq<5,a>`. The table pads\ncolumns with whitespace, so a label never holds a space. A `name`\nattribute overrides the label.",
+      "commit": "ab1dfb6",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T20:42:59.87130316Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Design: how the parser works. Agreed 2026-10-08.\n\nA hand-written lexer and recursive descent parser, with no dependencies.\nThe lexer has two entry points: the next michi token, or a scan of command\ntext to its `;` under the shell quoting rules above, which the parser asks\nfor once it knows it is looking at a command. Four passes, in this order,\nbecause an attribute argument cannot be typed until its sweep variable is\nbound.\n\n1. Parse: tokens to an untyped tree. An attribute is a name and a list of\n   argument values.\n2. Resolve: look up data references and evaluate ranges. Sweeps stay as\n   written. The `.sh` script comes from this tree.\n3. Expand: bind each parameter list to each of its points, copy the block\n   per point, replace every `$N` token, splice `$N` into strings and\n   command text, assign labels.\n4. Lower: map each attribute to its builder method and type its arguments.\n\nThe parser stops at the first error.\n\nmichi reports every error at load, before anything runs, with the file\nand line, and with the binding when a sweep is involved: `line 68, for\nT = a: cores takes an integer`.",
       "commit": "ab1dfb6",
       "branch": "michi-cli"
     }
