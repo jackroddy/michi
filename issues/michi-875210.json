@@ -1,0 +1,30 @@
+{
+  "id": "michi-875210",
+  "title": "Change a run from the command line without editing the file",
+  "body": "Deferred from the CLI design, 2026-10-08. Candidates: --data A=B to read every A.KEY from block B; --set A.K=V to replace one data value, V parsed as a michi value; --pool N to override the pipeline's pool for the machine at hand. All three act before resolve, on the scope, and apply to every pipeline in the file.",
+  "type": "feature",
+  "status": "open",
+  "priority": 4,
+  "labels": [],
+  "parent": "michi-f12a47",
+  "blocked_by": [
+    "michi-bb9e52"
+  ],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-10-08T22:53:42.172527403Z",
+  "updated_at": "2026-10-08T22:53:42.172527403Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "a191202",
+      "branch": "michi-cli"
+    },
+    "closed": null
+  }
+}
