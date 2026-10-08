@@ -15,7 +15,7 @@
   "lease_expires": "2026-10-08T20:24:57.033145239Z",
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.527769435Z",
-  "updated_at": "2026-10-08T20:09:57.033145239Z",
+  "updated_at": "2026-10-08T20:19:02.811755581Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -24,6 +24,13 @@
       "at": "2026-10-08T19:56:33.229577266Z",
       "author": "Jack Roddy/a556920e",
       "text": "Decided 2026-10-08: hand-written lexer and recursive descent, zero dependencies. Passes: parse, resolve (data and ranges), expand (sweeps, labels), lower (builders, typing). Reserved words listed in docs/file-format.md. First error stops. Golden .sh files test parse and resolve; expand gets unit tests.",
+      "commit": "7ee3b95",
+      "branch": "dev"
+    },
+    {
+      "at": "2026-10-08T20:19:02.811754921Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Lexer and parser written in michi-cli/src: error.rs, lex.rs, ast.rs, parse.rs, with unit tests and an integration test parsing syntax.michi. Workspace set up, root crate unchanged. Resolve, expand, lower and the .sh generator remain.",
       "commit": "7ee3b95",
       "branch": "dev"
     }
