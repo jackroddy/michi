@@ -13,7 +13,7 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.504397794Z",
-  "updated_at": "2026-10-08T20:42:59.656936988Z",
+  "updated_at": "2026-10-08T20:42:59.689667313Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -29,6 +29,13 @@
       "at": "2026-10-08T20:42:59.656935848Z",
       "author": "Jack Roddy/a556920e",
       "text": "Design: purpose and shape. Agreed 2026-10-08.\n\nA `.michi` file describes a pipeline that the `michi` binary builds and\nruns through the library, so someone can write a pipeline without Rust.\nEverything the library's builders can make can be written in it, except\nclosures.\n\nNon-goals: closures, scheduling, dependencies between steps, reruns. The\nfile is a list of steps, as the library is.\n\nFour constructs: `data` blocks, `pipeline` items, `step` items, and the\n`<…>` parameter list. Attributes, `#[…]`, configure the item or command\nbelow them. Commands are shell text ending in `;`.\n\n```\n#[pool(8), placement(spread), stderr_dir(cfg.ERR)]\npipeline bench {\n    data cfg { ERR = \"tmp/err\"; }\n    data quick { N = [5, 10]; K = [a]; }\n\n    step prep { seq 1 2000 > data.txt; }\n\n    #[jobs(3), cores(2)]\n    step burn<quick.N, quick.K> {\n        #[name(\"burn-$N-$K\"), timeout(30s), field($N, $K)]\n        seq 1 ${N}000000 > /dev/null;\n    }\n}\n```",
+      "commit": "ab1dfb6",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T20:42:59.689666573Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Design: lexical rules. Agreed 2026-10-08.\n\nNewlines mean nothing anywhere. A statement ends at `;` or at a block.\n\n- `//` starts a comment to end of line, outside command text only.\n- Strings are double quoted. Raw strings are `r#\"…\"#` and carry no escapes.\n- Numbers are bare: `8`, `7.5`. A duration is a number with a unit suffix,\n  one of `ms`, `s`, `m`, `h`: `30s`, `500ms`, `1h`. No compound forms.\n- A bare identifier names an enum variant, in snake case: `spread`,\n  `first_touch`, `on_failure`.\n- Reserved words, which no name or data key may use: `data`, `pipeline`,\n  `step`, `let`, `def`, `fn`, `for`, `in`, `if`, `else`, `use`, `import`,\n  `include`, `true`, `false`. Only the first three mean anything yet.\n- A dotted path, `quick.N`, names a value in a data block.\n- `$N` names a sweep variable.\n- A shebang on line one, `#!/usr/bin/env michi`, is skipped.",
       "commit": "ab1dfb6",
       "branch": "michi-cli"
     }
