@@ -13,11 +13,19 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.517038346Z",
-  "updated_at": "2026-10-08T19:39:37.517038346Z",
+  "updated_at": "2026-10-08T19:49:52.278744756Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
-  "notes": [],
+  "notes": [
+    {
+      "at": "2026-10-08T19:49:52.278743976Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Decided: a cargo workspace. The library keeps the name michi, unchanged. The binary crate gets a placeholder name, michi-cli, until Jack names it; the final name will not be michi-cli.",
+      "commit": "7ee3b95",
+      "branch": "dev"
+    }
+  ],
   "stamps": {
     "created": {
       "commit": "7ee3b95",
