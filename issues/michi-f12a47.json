@@ -13,7 +13,7 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.504397794Z",
-  "updated_at": "2026-10-08T20:42:59.904298869Z",
+  "updated_at": "2026-10-08T21:13:16.177878163Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
@@ -79,6 +79,13 @@
       "author": "Jack Roddy/a556920e",
       "text": "Design: rejected alternatives. Agreed 2026-10-08.\n\n- Directive comments in a shell script, in the style of `#SBATCH`: a\n  command with ten settings is a record, not a decorated line.\n- TOML, YAML and KDL: the right pieces, but none reads like a script.\n- Indentation as syntax.\n- `--flag` arguments on directives.\n- Sweeps as attributes: a sweep expands a region and an attribute\n  describes one item, so the attribute form kept needing a marker for\n  its reach.\n- Reusable definitions with parameters: parameter lists already cover the\n  repetition, and definitions brought ordering, scoping and splicing\n  rules with them.\n- Lists as arguments to anything.",
       "commit": "ab1dfb6",
+      "branch": "michi-cli"
+    },
+    {
+      "at": "2026-10-08T21:13:16.177877643Z",
+      "author": "Jack Roddy/a556920e",
+      "text": "Design: additions from the resolve and script review, 2026-10-08.\n\n- Names starting with `_` are reserved for the script: no data block, data key or sweep variable may start with one. The script uses `_i` as its tuple loop index and `_N` for the columns of an inline tuple list.\n- The script flattens `block.KEY` to `block_KEY` and a tuple list to `block_KEY_1` and up, so two paths that flatten to one shell name are a load error.\n- A data block sits at the top of the file or directly in a pipeline, never inside a sweep block.\n- The script emits a pipeline's data blocks before its steps, wherever they were written.\n- A data value and a parameter's inline list hold literals only: numbers, strings, identifiers, lists and tuples. No `$x`, no `block.KEY`, no call.\n- A list holds tuples of one width or no tuples at all, in data and in parameter lists.\n- An attribute above a sweep block may use the sweep's own variables, since it lands on the items inside the block, where they are bound. Attributes on a sweep reach through nested sweeps to every item they produce.\n- A raw string command still has `${block.KEY}` rewritten for the script.\n- A multiplying float range prints each value as the shortest text that reads back as itself, since a product has no fixed number of places. A multiplying integer range may not run backwards either.\n- A newline inside an attribute string is flattened to a space in the script's comments.",
+      "commit": "4e6b584",
       "branch": "michi-cli"
     }
   ],
