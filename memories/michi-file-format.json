@@ -1,10 +1,10 @@
 {
   "slug": "michi-file-format",
-  "text": "docs/file-format.md holds the agreed design of the .michi file format, dated 2026-10-08, and syntax.michi at the project root is its worked example. No parser exists yet. Both files are untracked.",
+  "text": "docs/file-format.md holds the agreed design of the .michi file format, dated 2026-10-08. The worked example is michi-cli/tests/cases/syntax.michi, with the bash script it should compile to beside it, and its text is also a note on milestone michi-f12a47. Only the lexer and parser exist.",
   "created_at": "2026-10-08T19:39:37.590466201Z",
-  "updated_at": "2026-10-08T19:39:37.590466201Z",
+  "updated_at": "2026-10-08T20:33:11.763532387Z",
   "stamp": {
-    "commit": "7ee3b95",
-    "branch": "dev"
+    "commit": "d1861f9",
+    "branch": "michi-cli"
   }
 }
