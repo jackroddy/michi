@@ -3,7 +3,7 @@
   "title": "Compile a .michi file to a .sh script",
   "body": "One line per expanded command, settings as comments above it. A way to check expansion by hand and a golden-file test oracle for the parser: tests/*.michi against expected *.sh.",
   "type": "feature",
-  "status": "open",
+  "status": "closed",
   "priority": 3,
   "labels": [],
   "parent": "michi-f12a47",
@@ -15,10 +15,10 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:39:37.538501764Z",
-  "updated_at": "2026-10-08T19:56:33.238272628Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-10-08T21:13:16.186807535Z",
+  "closed_at": "2026-10-08T21:13:16.186807535Z",
+  "close_reason": "sh.rs generates the script, tests/golden.rs checks it against tests/cases/*.sh and with bash -n; reviewed and fixed",
+  "resolution": "done",
   "notes": [
     {
       "at": "2026-10-08T19:56:33.238272038Z",
@@ -33,6 +33,9 @@
       "commit": "7ee3b95",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "4e6b584",
+      "branch": "michi-cli"
+    }
   }
 }
