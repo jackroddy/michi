@@ -1,8 +1,7 @@
 # michi-cli
 
 The `michi` binary: it reads a `.michi` file, which describes a pipeline
-without Rust, and runs it through the library. The crate name is a
-placeholder until Jack chooses one. The binary is named `michi` either way.
+without Rust, and runs it through the library.
 
 ## Status
 
@@ -54,5 +53,15 @@ with `MICHI_UPDATE_GOLDEN=1`, and reading the two files that produces.
 
 ## Releases
 
-Tag as `michi-cli-vMAJOR.MINOR.PATCH`. Nothing is published until the
-crate has its real name.
+michi-cli follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
+While the crate is below 1.0, a breaking change takes the minor number.
+A change to what a `.michi` file means is a breaking change.
+
+Tag every release, annotated, as `michi-cli-vMAJOR.MINOR.PATCH`, on the
+commit that was published.
+
+## Changelog
+
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Anything that changes what someone running the binary sees goes under
+`[Unreleased]` in the commit that changes it.

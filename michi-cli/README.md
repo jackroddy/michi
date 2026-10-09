@@ -14,5 +14,4 @@ michi bench.michi --silent --table runs.tbl
 A file that starts with `#!/usr/bin/env michi` runs as `./bench.michi`,
 and takes the same flags after its name.
 
-The crate name is a placeholder. A Vim syntax file for `.michi` is under
-`editors/vim/`.
+A Vim syntax file for `.michi` is under `editors/vim/`.
