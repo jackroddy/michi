@@ -3,7 +3,7 @@
   "title": "Name the CLI crate",
   "body": "michi-cli is a placeholder. Jack will choose the real name. The binary it installs is michi either way.",
   "type": "decision",
-  "status": "open",
+  "status": "closed",
   "priority": 3,
   "labels": [],
   "parent": "michi-f12a47",
@@ -13,16 +13,19 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-10-08T19:49:52.295387388Z",
-  "updated_at": "2026-10-08T19:49:52.295387388Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-10-09T19:18:59.550392965Z",
+  "closed_at": "2026-10-09T19:18:59.550392965Z",
+  "close_reason": "Decided 2026-10-09: the crate keeps the name michi-cli. The binary stays michi. The placeholder wording is gone from michi-cli/CLAUDE.md and README.md.",
+  "resolution": "done",
   "notes": [],
   "stamps": {
     "created": {
       "commit": "7ee3b95",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "ff8dddb",
+      "branch": "michi-cli"
+    }
   }
 }
